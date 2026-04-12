@@ -1,4 +1,6 @@
-# CLAUDE.md — chessmind
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project overview
 
@@ -14,6 +16,33 @@ PostgreSQL and Redis run as Docker services alongside the three application serv
 
 ```bash
 docker compose up --build
+```
+
+## Service commands (without Docker)
+
+**chessmind-api** (run from `api/api/`):
+```bash
+./gradlew bootRun        # start server
+./gradlew test           # run all tests
+./gradlew test --tests "com.chessmind.api.SomeServiceTest"  # single test class
+```
+
+**chessmind-analysis** (run from `chessmind-analysis/`):
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000   # start server
+pytest                                       # run all tests
+pytest tests/test_foo.py::test_bar           # single test
+```
+
+**chessmind-ui** (run from `chessmind-ui/`):
+```bash
+npm install
+npm run dev          # start dev server (port 5173)
+npm run test:unit    # run Vitest tests
+npm run type-check   # TypeScript check
+npm run lint         # oxlint + eslint with auto-fix
+npm run format       # Prettier
 ```
 
 ## Absolute rules
