@@ -30,5 +30,9 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  return { isLoading, serverError, createSession }
+  function clearError() {
+    serverError.value = null
+  }
+
+  return { isLoading, serverError, createSession, clearError }
 })

@@ -40,7 +40,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: chessmind
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
-      ANALYSIS_SERVICE_URL: http://chessmind-analysis:8000
+      ANALYSIS_BASE_URL: http://chessmind-analysis:8000
     depends_on:
       postgres:
         condition: service_healthy

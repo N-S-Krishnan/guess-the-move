@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import PgnTextarea from '@/components/PgnTextarea.vue'
@@ -11,6 +11,10 @@ const pgn = ref('')
 const isPgnValid = ref(false)
 
 const canSubmit = computed(() => isPgnValid.value && !sessionStore.isLoading)
+
+watch(pgn, () => {
+  if (sessionStore.serverError) sessionStore.clearError()
+})
 
 async function handleSubmit() {
   if (!canSubmit.value) return
@@ -40,7 +44,7 @@ async function handleSubmit() {
 
       <button type="submit" class="submit-btn" :disabled="!canSubmit">
         <span v-if="sessionStore.isLoading" class="loading-text">Importing…</span>
-        <span v-else>Start Studying</span>
+        <span v-else>Start Guessing</span>
       </button>
     </form>
   </main>

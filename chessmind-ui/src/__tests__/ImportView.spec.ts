@@ -108,6 +108,17 @@ describe('ImportView', () => {
     expect(store.createSession).toHaveBeenCalledWith(VALID_PGN)
   })
 
+  it('clears the server error when the user edits the PGN after a failure', async () => {
+    const { wrapper } = await mountImportView()
+    const store = useSessionStore()
+    store.serverError = 'PGN contains illegal moves'
+    await wrapper.vm.$nextTick()
+
+    await fillPgn(wrapper, VALID_PGN)
+
+    expect(store.clearError).toHaveBeenCalled()
+  })
+
   it('navigates to the setup route on successful session creation', async () => {
     const { wrapper, router } = await mountImportView()
     const store = useSessionStore()
