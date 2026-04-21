@@ -11,3 +11,15 @@ export interface SessionRouteState {
   black: string
   plyCount: number
 }
+
+export type PlayerColor = 'white' | 'black'
+
+export interface SetupSessionRequest {
+  playerToGuess: PlayerColor
+  startMoveNumber: number
+}
+
+export interface SetupSessionResponse {
+  fen: string
+  moveNumber: number
+}
