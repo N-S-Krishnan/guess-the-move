@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: api
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:chessmind}
+    username: ${DB_USER:chessmind}
+    password: ${DB_PASSWORD:chessmind}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+chessmind:
+  analysis:
+    base-url: ${ANALYSIS_BASE_URL:http://localhost:8000}
+    timeout-seconds: ${ANALYSIS_TIMEOUT_SECONDS:10}
+
+logging:
+  level:
+    root: INFO
+    com.chessmind: DEBUG
+    org.springframework.web: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE

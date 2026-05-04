@@ -105,7 +105,7 @@ describe('SetupView', () => {
   it('navigates to study route on successful setup', async () => {
     const { wrapper, router } = await mountSetupView()
     const store = useSessionStore()
-    vi.mocked(store.setupSession).mockResolvedValue({ fen: 'startfen', moveNumber: 1 })
+    vi.mocked(store.setupSession).mockResolvedValue({ fen: 'startfen', moveNumber: 1, moves: [] })
 
     await wrapper.find('[data-testid="confirm-btn"]').trigger('click')
     await flushPromises()
