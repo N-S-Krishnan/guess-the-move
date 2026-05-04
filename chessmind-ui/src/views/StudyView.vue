@@ -1,31 +1,84 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import ChessBoard from '@/components/ChessBoard.vue'
+import MoveGuessPanel from '@/components/MoveGuessPanel.vue'
+import MoveList from '@/components/MoveList.vue'
+import StudyComplete from '@/components/StudyComplete.vue'
 import type { Color } from 'chessground/types'
 
 const router = useRouter()
 const store = useSessionStore()
 
-// Guard: session must have been set up before arriving here.
 onMounted(() => {
   if (!store.currentFen) {
     router.replace({ name: 'import' })
   }
 })
 
+watch(
+  () => store.currentFen,
+  (fen) => {
+    if (!fen) router.replace({ name: 'import' })
+  },
+)
+
 const orientationMap: Record<string, Color> = { white: 'white', black: 'black' }
 const orientation = orientationMap[store.playerToGuess ?? 'white'] ?? 'white'
+
+const boardRef = ref<{ reset: () => void } | null>(null)
+
+async function handleMove(uci: string): Promise<void> {
+  const result = await store.submitGuess(uci)
+  if (result?.correct !== true) {
+    await nextTick()
+    boardRef.value?.reset?.()
+  }
+}
 </script>
 
 <template>
   <main v-if="store.currentFen" class="study-view">
     <div class="study-board-wrap">
-      <ChessBoard :fen="store.currentFen" :orientation="orientation" />
+      <ChessBoard
+        ref="boardRef"
+        :fen="store.currentFen"
+        :orientation="orientation"
+        :interactive="store.mode === 'guess' && !store.isLoading && !store.isAnimating"
+        @move="handleMove"
+      />
     </div>
 
-    <aside class="study-info">
+    <div
+      v-if="store.serverError"
+      class="server-error"
+      data-testid="server-error"
+      @click="store.clearError()"
+    >
+      {{ store.serverError }}
+    </div>
+
+    <MoveGuessPanel v-if="store.mode === 'guess'" />
+    <div
+      v-else-if="store.mode === 'analysis'"
+      class="analysis-panel"
+      data-testid="analysis-panel"
+    >
+      <button
+        type="button"
+        class="next-btn"
+        data-testid="next-btn"
+        @click="store.nextPosition()"
+      >
+        Next position →
+      </button>
+    </div>
+    <StudyComplete v-else-if="store.mode === 'complete'" />
+
+    <MoveList />
+
+    <aside v-if="store.mode !== 'complete'" class="study-info">
       <p class="study-label">
         Guessing as
         <strong>{{ store.playerToGuess === 'white' ? 'White' : 'Black' }}</strong>
@@ -64,5 +117,41 @@ const orientation = orientationMap[store.playerToGuess ?? 'white'] ?? 'white'
 
 .study-label strong {
   color: #2c3e50;
+}
+
+.server-error {
+  width: min(560px, 100%);
+  padding: 0.75rem 1rem;
+  background: #f8d7da;
+  border: 1px solid #f5c6cb;
+  border-radius: 6px;
+  color: #721c24;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.analysis-panel {
+  width: min(560px, 100%);
+  padding: 1rem 1.25rem;
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.next-btn {
+  padding: 0.45rem 1.1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  background: #2c3e50;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.next-btn:hover {
+  background: #3d5166;
 }
 </style>
