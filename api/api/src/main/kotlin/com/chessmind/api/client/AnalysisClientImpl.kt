@@ -1,7 +1,11 @@
 package com.chessmind.api.client
 
+import com.chessmind.api.client.dto.CompareRequest
+import com.chessmind.api.client.dto.CompareResponse
 import com.chessmind.api.client.dto.ParseRequest
 import com.chessmind.api.client.dto.ParseResponse
+import com.chessmind.api.client.dto.ValidateRequest
+import com.chessmind.api.client.dto.ValidateResponse
 import com.chessmind.api.exception.AnalysisException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -25,4 +29,31 @@ class AnalysisClientImpl(private val analysisRestClient: RestClient) : AnalysisC
             throw AnalysisException(detail.ifBlank { "Analysis service rejected the PGN" })
         }
     }
+
+    override suspend fun validate(fen: String, uciMove: String): ValidateResponse = withContext(Dispatchers.IO) {
+        try {
+            analysisRestClient.post()
+                .uri("/validate")
+                .body(ValidateRequest(fen = fen, uciMove = uciMove))
+                .retrieve()
+                .body(ValidateResponse::class.java)
+                ?: throw IllegalStateException("Empty response from analysis service")
+        } catch (e: HttpClientErrorException.BadRequest) {
+            throw IllegalStateException("Analysis service rejected FEN during validation: ${e.responseBodyAsString}")
+        }
+    }
+
+    override suspend fun compare(fen: String, submittedUci: String, expectedUci: String): CompareResponse =
+        withContext(Dispatchers.IO) {
+            try {
+                analysisRestClient.post()
+                    .uri("/compare")
+                    .body(CompareRequest(fen = fen, expectedUci = expectedUci, submittedUci = submittedUci))
+                    .retrieve()
+                    .body(CompareResponse::class.java)
+                    ?: throw IllegalStateException("Empty response from analysis service")
+            } catch (e: HttpClientErrorException.BadRequest) {
+                throw IllegalStateException("Analysis service rejected chess data during comparison: ${e.responseBodyAsString}")
+            }
+        }
 }

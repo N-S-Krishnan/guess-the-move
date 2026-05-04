@@ -26,8 +26,17 @@ class StudySession(
     val event: String,
 
     @Column(nullable = false)
-    val status: String = "pending_setup",
+    var status: String = "pending_setup",
 
     @Column(nullable = false)
     val createdAt: Instant = Instant.now(),
+
+    @Column(name = "player_to_guess", nullable = true)
+    var playerToGuess: String? = null,
+
+    @Column(name = "start_move_num", nullable = true)
+    var startMoveNum: Int? = null,
+
+    @Column(name = "current_move_idx", nullable = true)
+    var currentMoveIdx: Int? = null,
 )

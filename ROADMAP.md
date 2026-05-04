@@ -149,16 +149,19 @@ The core study interaction. The user is shown the board at the current position 
 
 - In `StudyView.vue`, conditionally render `MoveGuessPanel.vue` when `store.mode === 'guess'`
 - Wire the chessboard's `move` event to `store.submitGuess(uciMove)`
-  - On incorrect: snap the piece back, display feedback in `GuessFeedback.vue` (e.g., "Not the move — try again")
+  - On incorrect: snap the piece back, display feedback in `GuessFeedback.vue`; the board must remain fully interactive so the user can immediately try another piece
   - On correct: animate the move on the board, then animate the opponent's reply after a short delay, then transition `store.mode` to `'analysis'`
-- `GuessFeedback.vue` tracks the number of failed attempts locally; after a configurable threshold (default: 3), show a "Reveal move" button that calls `store.revealMove()`, which sets the board to `fenAfterOpponent` without recording a correct guess
+- `GuessFeedback.vue` shows a "Give up" button from the **first** failed attempt (threshold: 1); it calls `store.revealMove()`, which advances past the current position without recording a correct guess
+- `ChessBoard.vue`'s `reset()` function must restore the full movable/draggable/selectable config alongside the FEN so the board is interactive after snap-back (current bug: `reset()` only sets `fen`, leaving the board in the non-interactive state applied during the loading phase)
 - The move list panel (`MoveList.vue`) shows all mainline moves up to and including the last completed guess, but masks all future moves with a placeholder so the user cannot read ahead
 
 ### Acceptance Criteria
 
-- [ ] Making the correct move advances the board, plays the opponent's reply, and transitions to analysis mode
-- [ ] Making an incorrect move snaps the piece back and shows a feedback message without advancing the position
-- [ ] The move list does not reveal any moves beyond the current guess position
-- [ ] Illegal moves (e.g., moving into check) are rejected before being submitted to the API
-- [ ] After the opponent's reply is animated, the board is no longer interactive in guess mode until "Resume Study" is triggered (Feature 4 boundary)
-- [ ] A session that has no remaining moves to guess (end of game reached) displays a completion state rather than prompting for another guess
+- [x] Making the correct move advances the board, plays the opponent's reply, and transitions to analysis mode
+- [x] Making an incorrect move snaps the piece back and shows a feedback message without advancing the position
+- [x] The board accepts a second guess immediately after snapping back from an incorrect one
+- [x] A "Give up" button is visible after the first wrong guess, not after a threshold of three
+- [x] The move list does not reveal any moves beyond the current guess position
+- [x] Illegal moves (e.g., moving into check) are rejected before being submitted to the API
+- [x] After the opponent's reply is animated, the board is no longer interactive until "Next position →" is clicked (Feature 4)
+- [x] A session that has no remaining moves to guess displays a completion state rather than prompting for another guess

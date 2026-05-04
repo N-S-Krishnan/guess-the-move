@@ -1,11 +1,20 @@
 package com.chessmind.api.service
 
 import com.chessmind.api.client.AnalysisClient
+import com.chessmind.api.client.dto.CompareResponse
 import com.chessmind.api.client.dto.MoveEntry
 import com.chessmind.api.client.dto.ParseResponse
+import com.chessmind.api.client.dto.ValidateResponse
+import com.chessmind.api.dto.GuessRequest
+import com.chessmind.api.dto.SessionProgress
+import com.chessmind.api.dto.SetupSessionRequest
+import com.chessmind.api.dto.SkipResponse
 import com.chessmind.api.entity.StudySession
 import com.chessmind.api.exception.AnalysisException
+import com.chessmind.api.exception.SessionConflictException
+import com.chessmind.api.exception.SessionNotFoundException
 import com.chessmind.api.repository.StudySessionRepository
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -17,8 +26,10 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.data.redis.core.ValueOperations
+import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -30,8 +41,15 @@ class SessionServiceTest {
     private val redisTemplate: RedisTemplate<String, Any> = mockk<RedisTemplate<String, Any>>().also {
         every { it.opsForValue() } returns valueOps
     }
+    // Real ObjectMapper with Kotlin module — mirrors the Spring auto-configured bean.
+    private val objectMapper = jacksonObjectMapper()
 
-    private val service = SessionService(analysisClient, sessionRepository, redisTemplate)
+    private val service = SessionService(analysisClient, sessionRepository, redisTemplate, objectMapper)
+
+    // 7 full moves (14 plies): moves[0..13]
+    private val sampleMoves = (0 until 14).map { i ->
+        MoveEntry(san = "move$i", uci = "uci$i", fenAfter = "fen_after_ply_$i")
+    }
 
     private val sampleParsed = ParseResponse(
         white = "Magnus Carlsen",
@@ -42,8 +60,33 @@ class SessionServiceTest {
         plyCount = 14,
         fullMoveCount = 7,
         startingFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        moves = listOf(MoveEntry("e4", "e2e4", "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")),
+        moves = sampleMoves,
     )
+
+    private fun mockValidateLegal(fen: String, uci: String, san: String = "san_$uci") {
+        coEvery { analysisClient.validate(fen, uci) } returns ValidateResponse(legal = true, san = san)
+    }
+
+    private fun mockValidateIllegal(fen: String, uci: String) {
+        coEvery { analysisClient.validate(fen, uci) } returns ValidateResponse(legal = false, san = null)
+    }
+
+    private fun mockCompare(
+        fen: String,
+        submittedUci: String,
+        expectedUci: String,
+        correct: Boolean,
+        expectedSan: String = "san_$expectedUci",
+        fenAfter: String = "fen_after_expected",
+    ) {
+        coEvery { analysisClient.compare(fen, submittedUci, expectedUci) } returns CompareResponse(
+            correct = correct,
+            legal = true,
+            submittedSan = if (correct) expectedSan else "wrong_san",
+            expectedSan = expectedSan,
+            fenAfter = fenAfter,
+        )
+    }
 
     private fun savedSessionFor(id: UUID = UUID.randomUUID()) = StudySession(
         id = id,
@@ -52,6 +95,8 @@ class SessionServiceTest {
         black = sampleParsed.black,
         event = sampleParsed.event,
     )
+
+    // ── createSession ──────────────────────────────────────────────────────────
 
     @Test
     fun `createSession returns correct response on happy path`() = runTest {
@@ -118,5 +163,497 @@ class SessionServiceTest {
 
         assertNotNull(thrown)
         assertInstanceOf(AnalysisException::class.java, thrown)
+    }
+
+    // ── setupSession ───────────────────────────────────────────────────────────
+
+    @Test
+    fun `setupSession includes all SAN moves in the response`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        val result = service.setupSession(session.id, SetupSessionRequest("white", 1))
+
+        assertEquals(sampleMoves.map { it.san }, result.moves)
+    }
+
+    @Test
+    fun `setupSession for white at move 1 returns startingFen`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        val result = service.setupSession(session.id, SetupSessionRequest("white", 1))
+
+        assertEquals(sampleParsed.startingFen, result.fen)
+        assertEquals(1, result.moveNumber)
+    }
+
+    @Test
+    fun `setupSession for white at move 3 returns fen after ply 4`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        // White's 3rd move = ply index 4; FEN before it = moves[3].fenAfter
+        val result = service.setupSession(session.id, SetupSessionRequest("white", 3))
+
+        assertEquals("fen_after_ply_3", result.fen)
+        assertEquals(3, result.moveNumber)
+    }
+
+    @Test
+    fun `setupSession for black at move 1 returns fen after white ply 0`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        // Black's reply to move 1 = ply index 1; FEN before it = moves[0].fenAfter
+        val result = service.setupSession(session.id, SetupSessionRequest("black", 1))
+
+        assertEquals("fen_after_ply_0", result.fen)
+        assertEquals(1, result.moveNumber)
+    }
+
+    @Test
+    fun `setupSession updates session entity to in_progress with correct fields`() = runTest {
+        val session = savedSessionFor()
+        val savedSlot = slot<StudySession>()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(capture(savedSlot)) } returns session
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        service.setupSession(session.id, SetupSessionRequest("white", 2))
+
+        with(savedSlot.captured) {
+            assertEquals("in_progress", status)
+            assertEquals("white", playerToGuess)
+            assertEquals(2, startMoveNum)
+            assertEquals(2, currentMoveIdx) // white's 2nd move = ply 2*(2-1) = 2
+        }
+    }
+
+    @Test
+    fun `setupSession writes progress to Redis with 24 hour TTL`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        service.setupSession(session.id, SetupSessionRequest("white", 1))
+
+        coVerify {
+            valueOps.set(
+                "session:${session.id}:progress",
+                any(),
+                24L,
+                TimeUnit.HOURS,
+            )
+        }
+    }
+
+    @Test
+    fun `setupSession deserializes ParseResponse correctly when Redis returns a LinkedHashMap`() = runTest {
+        // GenericJackson2JsonRedisSerializer without default typing stores no @class field,
+        // so Jackson deserializes the value as a LinkedHashMap on read-back.
+        val session = savedSessionFor()
+        val asMap: Any = objectMapper.convertValue(sampleParsed, Map::class.java)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:state") } returns asMap
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        val result = service.setupSession(session.id, SetupSessionRequest("white", 1))
+
+        assertEquals(sampleParsed.startingFen, result.fen)
+        assertEquals(1, result.moveNumber)
+    }
+
+    @Test
+    fun `setupSession throws SessionNotFoundException when session does not exist`() = runTest {
+        val id = UUID.randomUUID()
+        every { sessionRepository.findById(id) } returns Optional.empty()
+
+        assertThrows<SessionNotFoundException> {
+            service.setupSession(id, SetupSessionRequest("white", 1))
+        }
+    }
+
+    @Test
+    fun `setupSession throws SessionConflictException when session is already in_progress`() = runTest {
+        val session = savedSessionFor().also { it.status = "in_progress" }
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+
+        assertThrows<SessionConflictException> {
+            service.setupSession(session.id, SetupSessionRequest("white", 1))
+        }
+    }
+
+    @Test
+    fun `setupSession throws IllegalArgumentException for invalid playerToGuess`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+
+        assertThrows<IllegalArgumentException> {
+            service.setupSession(session.id, SetupSessionRequest("green", 1))
+        }
+    }
+
+    @Test
+    fun `setupSession throws IllegalArgumentException when startMoveNumber exceeds game length`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+
+        assertThrows<IllegalArgumentException> {
+            service.setupSession(session.id, SetupSessionRequest("white", 8)) // game has 7 full moves
+        }
+    }
+
+    @Test
+    fun `setupSession throws IllegalArgumentException when black has no move at final move`() = runTest {
+        // 13 plies: 7 white moves, 6 black replies — no black move at full move 7
+        val oddParsed = sampleParsed.copy(plyCount = 13, fullMoveCount = 7, moves = sampleMoves.take(13))
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns oddParsed
+
+        assertThrows<IllegalArgumentException> {
+            service.setupSession(session.id, SetupSessionRequest("black", 7))
+        }
+    }
+
+    // ── submitGuess ────────────────────────────────────────────────────────────
+
+    private fun inProgressSessionFor(id: UUID = UUID.randomUUID()) =
+        savedSessionFor(id).also { it.status = "in_progress"; it.currentMoveIdx = 0 }
+
+    private fun progressAt(moveIndex: Int, mode: String = "guess") =
+        SessionProgress(currentFen = "fen_before_ply_$moveIndex", moveIndex = moveIndex, mode = mode)
+
+    @Test
+    fun `submitGuess returns fenAfterPlayer equal to fen_after from the compare response`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+        mockValidateLegal("fen_before_ply_0", "uci0")
+        mockCompare("fen_before_ply_0", "uci0", "uci0", correct = true, fenAfter = "fen_after_ply_0")
+
+        val result = service.submitGuess(session.id, GuessRequest("uci0"))
+
+        assertEquals("fen_after_ply_0", result.fenAfterPlayer)
+    }
+
+    @Test
+    fun `submitGuess returns null fenAfterPlayer when guess is wrong`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        mockValidateLegal("fen_before_ply_0", "wrong_move")
+        mockCompare("fen_before_ply_0", "wrong_move", "uci0", correct = false, fenAfter = "fen_after_ply_0")
+
+        val result = service.submitGuess(session.id, GuessRequest("wrong_move"))
+
+        assertEquals(null, result.fenAfterPlayer)
+    }
+
+    @Test
+    fun `submitGuess returns correct=true and nextFen when guess is right and more moves remain`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+        mockValidateLegal("fen_before_ply_0", "uci0")
+        mockCompare("fen_before_ply_0", "uci0", "uci0", correct = true, fenAfter = "fen_after_ply_0")
+
+        // uci0 is the correct move at ply 0; next white ply is 2, FEN before it = moves[1].fenAfter
+        val result = service.submitGuess(session.id, GuessRequest("uci0"))
+
+        assertEquals(true, result.correct)
+        assertEquals(null, result.correctMove)
+        assertEquals("fen_after_ply_1", result.nextFen)
+    }
+
+    @Test
+    fun `submitGuess returns correct=true and nextFen=null when guess is right on the last move`() = runTest {
+        // White's last move in a 14-ply game is ply 12 (0-indexed); next ply 14 >= 14 = game over
+        val session = inProgressSessionFor().also { it.currentMoveIdx = 12 }
+        val progress = progressAt(12)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+        mockValidateLegal("fen_before_ply_12", "uci12")
+        mockCompare("fen_before_ply_12", "uci12", "uci12", correct = true, fenAfter = "fen_after_ply_12")
+
+        val result = service.submitGuess(session.id, GuessRequest("uci12"))
+
+        assertEquals(true, result.correct)
+        assertEquals(null, result.correctMove)
+        assertEquals(null, result.nextFen)
+    }
+
+    @Test
+    fun `submitGuess returns correct=false and null correctMove when guess is wrong`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        mockValidateLegal("fen_before_ply_0", "wrong_move")
+        mockCompare("fen_before_ply_0", "wrong_move", "uci0", correct = false, fenAfter = "fen_after_ply_0")
+
+        val result = service.submitGuess(session.id, GuessRequest("wrong_move"))
+
+        assertEquals(false, result.correct)
+        assertEquals(null, result.correctMove)
+        assertEquals(null, result.nextFen)
+    }
+
+    @Test
+    fun `submitGuess advances currentMoveIdx and writes updated progress to Redis on correct guess`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        val savedSlot = slot<StudySession>()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(capture(savedSlot)) } returns session
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+        mockValidateLegal("fen_before_ply_0", "uci0")
+        mockCompare("fen_before_ply_0", "uci0", "uci0", correct = true, fenAfter = "fen_after_ply_0")
+
+        service.submitGuess(session.id, GuessRequest("uci0"))
+
+        assertEquals(2, savedSlot.captured.currentMoveIdx)
+        coVerify {
+            valueOps.set(
+                "session:${session.id}:progress",
+                SessionProgress(currentFen = "fen_after_ply_1", moveIndex = 2, mode = "guess"),
+                24L,
+                TimeUnit.HOURS,
+            )
+        }
+    }
+
+    @Test
+    fun `submitGuess sets session to completed and progress mode to complete on final correct guess`() = runTest {
+        val session = inProgressSessionFor().also { it.currentMoveIdx = 12 }
+        val progress = progressAt(12)
+        val savedSlot = slot<StudySession>()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(capture(savedSlot)) } returns session
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+        mockValidateLegal("fen_before_ply_12", "uci12")
+        mockCompare("fen_before_ply_12", "uci12", "uci12", correct = true, fenAfter = "fen_after_ply_12")
+
+        service.submitGuess(session.id, GuessRequest("uci12"))
+
+        assertEquals("completed", savedSlot.captured.status)
+        coVerify {
+            valueOps.set(
+                "session:${session.id}:progress",
+                match<SessionProgress> { it.mode == "complete" },
+                24L,
+                TimeUnit.HOURS,
+            )
+        }
+    }
+
+    @Test
+    fun `submitGuess throws IllegalArgumentException when move is illegal in the position`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        mockValidateIllegal("fen_before_ply_0", "e2e5")
+
+        assertThrows<IllegalArgumentException> {
+            service.submitGuess(session.id, GuessRequest("e2e5"))
+        }
+    }
+
+    @Test
+    fun `submitGuess throws SessionNotFoundException when session does not exist`() = runTest {
+        val id = UUID.randomUUID()
+        every { sessionRepository.findById(id) } returns Optional.empty()
+
+        assertThrows<SessionNotFoundException> {
+            service.submitGuess(id, GuessRequest("e2e4"))
+        }
+    }
+
+    @Test
+    fun `submitGuess throws SessionConflictException when session is not in_progress`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+
+        assertThrows<SessionConflictException> {
+            service.submitGuess(session.id, GuessRequest("e2e4"))
+        }
+    }
+
+    @Test
+    fun `submitGuess throws SessionConflictException when progress mode is not guess`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0, mode = "complete")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+
+        assertThrows<SessionConflictException> {
+            service.submitGuess(session.id, GuessRequest("e2e4"))
+        }
+    }
+
+    @Test
+    fun `submitGuess throws IllegalStateException when progress is missing from Redis`() = runTest {
+        val session = inProgressSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns null
+
+        assertThrows<IllegalStateException> {
+            service.submitGuess(session.id, GuessRequest("e2e4"))
+        }
+    }
+
+    @Test
+    fun `submitGuess throws IllegalStateException when parse state is missing from Redis`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns null
+
+        assertThrows<IllegalStateException> {
+            service.submitGuess(session.id, GuessRequest("e2e4"))
+        }
+    }
+
+    // ── skipGuess ──────────────────────────────────────────────────────────────
+
+    @Test
+    fun `skipGuess returns nextFen and advances position when more moves remain`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(any()) } returns session
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        val result = service.skipGuess(session.id)
+
+        assertEquals("fen_after_ply_1", result.nextFen)
+    }
+
+    @Test
+    fun `skipGuess returns nextFen=null and completes session when no moves remain`() = runTest {
+        val session = inProgressSessionFor().also { it.currentMoveIdx = 12 }
+        val progress = progressAt(12)
+        val savedSlot = slot<StudySession>()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(capture(savedSlot)) } returns session
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        val result = service.skipGuess(session.id)
+
+        assertEquals(null, result.nextFen)
+        assertEquals("completed", savedSlot.captured.status)
+    }
+
+    @Test
+    fun `skipGuess advances currentMoveIdx and writes updated progress to Redis`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        val savedSlot = slot<StudySession>()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { sessionRepository.save(capture(savedSlot)) } returns session
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        service.skipGuess(session.id)
+
+        assertEquals(2, savedSlot.captured.currentMoveIdx)
+        coVerify {
+            valueOps.set(
+                "session:${session.id}:progress",
+                SessionProgress(currentFen = "fen_after_ply_1", moveIndex = 2, mode = "guess"),
+                24L,
+                TimeUnit.HOURS,
+            )
+        }
+    }
+
+    @Test
+    fun `skipGuess throws SessionNotFoundException when session does not exist`() = runTest {
+        val id = UUID.randomUUID()
+        every { sessionRepository.findById(id) } returns Optional.empty()
+
+        assertThrows<SessionNotFoundException> { service.skipGuess(id) }
+    }
+
+    @Test
+    fun `skipGuess throws SessionConflictException when session is not in_progress`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+
+        assertThrows<SessionConflictException> { service.skipGuess(session.id) }
+    }
+
+    @Test
+    fun `skipGuess throws SessionConflictException when progress mode is not guess`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0, mode = "complete")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+
+        assertThrows<SessionConflictException> { service.skipGuess(session.id) }
+    }
+
+    @Test
+    fun `skipGuess throws IllegalStateException when progress is missing from Redis`() = runTest {
+        val session = inProgressSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns null
+
+        assertThrows<IllegalStateException> { service.skipGuess(session.id) }
+    }
+
+    @Test
+    fun `skipGuess throws IllegalStateException when parse state is missing from Redis`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { valueOps.get("session:${session.id}:state") } returns null
+
+        assertThrows<IllegalStateException> { service.skipGuess(session.id) }
     }
 }
