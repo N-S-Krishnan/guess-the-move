@@ -165,3 +165,74 @@ The core study interaction. The user is shown the board at the current position 
 - [x] Illegal moves (e.g., moving into check) are rejected before being submitted to the API
 - [x] After the opponent's reply is animated, the board is no longer interactive until "Next position →" is clicked (Feature 4)
 - [x] A session that has no remaining moves to guess displays a completion state rather than prompting for another guess
+
+---
+
+## Feature 4 — Free Analysis Mode & Resume
+
+After the current guess position is resolved — either by a correct guess or by giving up — the user may freely explore the position: making speculative moves, building variation lines, adding comments, and annotating moves with symbols before resuming the study at the next guess prompt.
+
+### Scope
+
+- The board enters Analysis Mode via two paths: clicking "Next position →" after a correct guess and the opponent's reply, or immediately and automatically after the give-up / reveal path (`store.revealMove()`) from Feature 3
+- The board is fully interactive: any legal move is accepted and added to the variation tree
+- A take-back button removes the last analysis move
+- A `CommentEditor` allows free-text annotation per position, auto-saved on blur
+- The user can apply a move annotation symbol (!, ?, !!, ??, !?, ?!) to any move in the active variation
+- A sticky `ResumeBanner` is always visible; clicking "Resume Study" returns to Guess Mode at the next mainline position
+- All analysis moves, comments, and symbols are persisted to PostgreSQL in the `annotations` table
+
+### `chessmind-analysis` (Python)
+
+No new endpoints are required. The existing `POST /validate` endpoint (Feature 3) is reused by Spring to confirm that each analysis move is legal in the current position before appending it to the variation tree.
+
+### `chessmind-api` (Spring / Kotlin)
+
+- Implement `POST /api/v1/sessions/{id}/analysis/move`
+  - Accept `{ uciMove: String, fromFen: String }`
+  - Call `AnalysisClient.validate(fen, uciMove)`; reject illegal moves with `400`
+  - Append a new `annotations` row as a child of the current position node (set `parent_id` to the annotation for `fromFen`, or null if branching from the mainline)
+  - Update the `variationStack` in Redis to reflect the new active position
+  - Return `{ san: String, fenAfter: String }`
+- Implement `DELETE /api/v1/sessions/{id}/analysis/move`
+  - Pop the last entry from the Redis `variationStack`
+  - Return the restored `{ fen: String }` so the board can revert
+- Implement `POST /api/v1/sessions/{id}/resume`
+  - Clear the Redis `variationStack`
+  - Set `mode = 'guess'` in Redis
+  - Set `currentFen` to the FEN at the current `moveIndex` (the next mainline position to guess)
+  - Return `{ fen: String, moveIndex: Int }` so the client can re-initialize the board
+- Implement `PUT /api/v1/sessions/{id}/annotation`
+  - Accept `{ fen: String, comment: String?, symbol: String? }` (both fields optional; at least one must be present)
+  - Upsert `comment` and/or `symbol` on the matching `annotations` row for this session and FEN
+  - Validate `symbol` is one of `!`, `?`, `!!`, `??`, `!?`, `?!` if present; reject with `400` otherwise
+  - Return `204 No Content`
+- Reject `POST /analysis/move` and `DELETE /analysis/move` when session `mode` is not `'analysis'` (`409`)
+- Unit test: service layer with mocked `AnalysisClient` and repositories for each of the four endpoints above
+
+### `chessmind-ui` (Vue 3)
+
+- In `StudyView.vue`, conditionally render `AnalysisPanel.vue` when `store.mode === 'analysis'`
+- `AnalysisPanel.vue` contains:
+  - `MoveList.vue` — displays the mainline up to the current guess position plus any active variation moves in the `variationStack`; clicking a variation node calls `store.jumpToVariation(fen)` (navigates the board without a server round-trip, using the FEN from the node)
+  - `CommentEditor.vue` — a plain `<textarea>` bound to `store.currentComment`; on blur, calls `sessionService.saveAnnotation(sessionId, fen, { comment })` if the value has changed
+  - `MoveSymbolSelector.vue` — a row of six symbol buttons (!, ?, !!, ??, !?, ?!) rendered inline after each move entry in `MoveList`; clicking one calls `sessionService.saveAnnotation(sessionId, fen, { symbol })` immediately and toggles off if clicked again
+  - `ResumeBanner.vue` — a sticky bar rendered above the board; "Resume Study" button calls `store.resumeStudy()`, which hits `POST /resume` and transitions `store.mode` back to `'guess'`
+- Wire the board's `move` event in analysis mode to `store.addAnalysisMove(uciMove)`
+- Add a "↩ Take back" button that calls `store.takeBackAnalysisMove()`; disable it when `store.variationStack` is empty
+- `store.resumeStudy()` must reset the board's FEN and restore full movable/draggable config (same concern as the Feature 3 snap-back bug — call the board's full reset helper, not just `setFen`)
+
+### Acceptance Criteria
+
+- [ ] Clicking "Next position →" after a correct guess unlocks the board and shows `AnalysisPanel`
+- [ ] Giving up via the reveal path transitions immediately and automatically into Analysis Mode without requiring a button click
+- [ ] Any legal move made in analysis mode appears in `MoveList` and does not advance the mainline guess cursor
+- [ ] The "↩ Take back" button reverts the last analysis move; it is disabled when no analysis moves have been made
+- [ ] Comments entered in `CommentEditor` are persisted and reloaded if the session is revisited
+- [ ] The `ResumeBanner` is visible at all times during Analysis Mode and cannot be scrolled out of view
+- [ ] Clicking "Resume Study" transitions the board to the next mainline guess position with the board interactive in Guess Mode
+- [ ] Attempting to submit an analysis move via the API while `mode = 'guess'` returns `409`
+- [ ] Applying a symbol to a move displays it inline in `MoveList` and persists across a page refresh
+- [ ] Applying a symbol a second time removes it (toggle off)
+- [ ] Submitting an invalid symbol value to `PUT /annotation` returns `400`
+- [ ] Variation moves are stored in the `annotations` table and survive a page refresh

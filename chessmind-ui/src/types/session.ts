@@ -37,3 +37,20 @@ export interface GuessResponse {
 export interface SkipResponse {
   nextFen: string | null
 }
+
+export interface VariationNode {
+  id: string
+  san: string
+  uci: string
+  fen: string
+  fromFen: string
+  symbol?: string
+  comment?: string
+  children: VariationNode[]
+}
+
+export interface AddAnalysisMoveResponse {
+  id: string
+  san: string
+  fenAfter: string
+}

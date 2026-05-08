@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type {
+  AddAnalysisMoveResponse,
   CreateSessionResponse,
   GuessResponse,
   SetupSessionRequest,
@@ -30,4 +31,20 @@ export async function submitGuess(sessionId: string, uci: string): Promise<Guess
 export async function skipGuess(sessionId: string): Promise<SkipResponse> {
   const { data } = await api.post<SkipResponse>(`/sessions/${sessionId}/skip`)
   return data
+}
+
+export async function addAnalysisMove(
+  sessionId: string,
+  uciMove: string,
+  fromFen: string,
+): Promise<AddAnalysisMoveResponse> {
+  const { data } = await api.post<AddAnalysisMoveResponse>(
+    `/sessions/${sessionId}/analysis/move`,
+    { uciMove, fromFen },
+  )
+  return data
+}
+
+export async function deleteLastAnalysisMove(sessionId: string): Promise<void> {
+  await api.delete(`/sessions/${sessionId}/analysis/move`)
 }

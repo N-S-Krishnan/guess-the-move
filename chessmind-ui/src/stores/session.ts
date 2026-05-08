@@ -1,8 +1,8 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import axios from 'axios'
 import * as sessionService from '@/services/sessionService'
-import type { CreateSessionResponse, GuessResponse, PlayerColor, SessionMode, SetupSessionResponse, SkipResponse } from '@/types/session'
+import type { CreateSessionResponse, GuessResponse, PlayerColor, SessionMode, SetupSessionResponse, SkipResponse, VariationNode } from '@/types/session'
 
 function extractErrorMessage(err: unknown): string {
   if (axios.isAxiosError(err)) {
@@ -15,6 +15,15 @@ function extractErrorMessage(err: unknown): string {
 
 function isSessionGone(err: unknown): boolean {
   return axios.isAxiosError(err) && err.response?.status === 404
+}
+
+function findPath(nodes: VariationNode[], targetFen: string): VariationNode[] | null {
+  for (const node of nodes) {
+    if (node.fen === targetFen) return [node]
+    const childPath = findPath(node.children, targetFen)
+    if (childPath) return [node, ...childPath]
+  }
+  return null
 }
 
 export const useSessionStore = defineStore('session', () => {
@@ -36,6 +45,15 @@ export const useSessionStore = defineStore('session', () => {
   const lastGuessResult = ref<{ correct: boolean; correctMove: string | null } | null>(null)
   const isAnimating = ref(false)
   const lastGuessWasCorrect = ref(false)
+
+  // Variation tree — accumulates analysis branches across all guess positions in the session
+  const variationTree = ref<VariationNode[]>([])
+  // Stack of nodes representing the current navigation path within the tree
+  const currentPath = ref<VariationNode[]>([])
+  // FEN of the board position currently shown in analysis mode
+  const activeAnalysisFen = computed(
+    () => currentPath.value[currentPath.value.length - 1]?.fen ?? currentFen.value,
+  )
 
   async function createSession(pgn: string): Promise<CreateSessionResponse | null> {
     isLoading.value = true
@@ -157,7 +175,63 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function addAnalysisMove(uci: string): Promise<void> {
+    if (!sessionId.value) return
+    isLoading.value = true
+    serverError.value = null
+    const fromFen = activeAnalysisFen.value ?? ''
+    try {
+      const result = await sessionService.addAnalysisMove(sessionId.value, uci, fromFen)
+      const node: VariationNode = {
+        id: result.id,
+        san: result.san,
+        uci,
+        fen: result.fenAfter,
+        fromFen,
+        children: [],
+      }
+      const tip = currentPath.value[currentPath.value.length - 1]
+      if (tip === undefined) {
+        variationTree.value.push(node)
+      } else {
+        tip.children.push(node)
+      }
+      currentPath.value.push(node)
+    } catch (err) {
+      serverError.value = extractErrorMessage(err)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function takeBackAnalysisMove(): Promise<void> {
+    if (!sessionId.value || currentPath.value.length === 0) return
+    isLoading.value = true
+    serverError.value = null
+    try {
+      await sessionService.deleteLastAnalysisMove(sessionId.value)
+      const removed = currentPath.value[currentPath.value.length - 1]
+      currentPath.value.pop()
+      const parent = currentPath.value[currentPath.value.length - 1]
+      if (parent === undefined) {
+        variationTree.value = variationTree.value.filter((n) => n !== removed)
+      } else {
+        parent.children = parent.children.filter((n) => n !== removed)
+      }
+    } catch (err) {
+      serverError.value = extractErrorMessage(err)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  function jumpToNode(node: VariationNode): void {
+    const path = findPath(variationTree.value, node.fen)
+    if (path) currentPath.value = path
+  }
+
   function nextPosition(): void {
+    currentPath.value = []
     mode.value = 'guess'
   }
 
@@ -180,10 +254,16 @@ export const useSessionStore = defineStore('session', () => {
     lastGuessResult,
     isAnimating,
     lastGuessWasCorrect,
+    variationTree,
+    currentPath,
+    activeAnalysisFen,
     createSession,
     setupSession,
     submitGuess,
     revealMove,
+    addAnalysisMove,
+    takeBackAnalysisMove,
+    jumpToNode,
     nextPosition,
     clearError,
   }
