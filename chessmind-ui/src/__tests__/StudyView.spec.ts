@@ -38,6 +38,13 @@ vi.mock('@/components/StudyComplete.vue', () => ({
   },
 }))
 
+vi.mock('@/components/AnalysisPanel.vue', () => ({
+  default: {
+    name: 'AnalysisPanel',
+    template: '<div data-testid="analysis-panel" />',
+  },
+}))
+
 function makeRouter() {
   return createRouter({
     history: createMemoryHistory(),
@@ -150,8 +157,13 @@ describe('StudyView', () => {
     expect(wrapper.find('[data-testid="chess-board"]').attributes('data-interactive')).toBe('true')
   })
 
-  it('passes interactive=false to ChessBoard when mode is analysis', async () => {
+  it('passes interactive=true to ChessBoard when mode is analysis', async () => {
     const { wrapper } = await mountStudyView({ mode: 'analysis' })
+    expect(wrapper.find('[data-testid="chess-board"]').attributes('data-interactive')).toBe('true')
+  })
+
+  it('passes interactive=false to ChessBoard when mode is reviewing', async () => {
+    const { wrapper } = await mountStudyView({ mode: 'reviewing' })
     expect(wrapper.find('[data-testid="chess-board"]').attributes('data-interactive')).toBe('false')
   })
 
@@ -268,8 +280,19 @@ describe('StudyView', () => {
     expect(wrapper.find('[data-testid="analysis-panel"]').exists()).toBe(false)
   })
 
-  it('calls store.nextPosition when the Next position button is clicked', async () => {
+  it('renders the reviewing panel and next-btn when mode is reviewing', async () => {
+    const { wrapper } = await mountStudyView({ mode: 'reviewing' })
+    expect(wrapper.find('[data-testid="reviewing-panel"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="next-btn"]').exists()).toBe(true)
+  })
+
+  it('does not render reviewing-panel when mode is analysis', async () => {
     const { wrapper } = await mountStudyView({ mode: 'analysis' })
+    expect(wrapper.find('[data-testid="reviewing-panel"]').exists()).toBe(false)
+  })
+
+  it('calls store.nextPosition when the Next position button is clicked in reviewing mode', async () => {
+    const { wrapper } = await mountStudyView({ mode: 'reviewing' })
     const store = useSessionStore()
     await wrapper.find('[data-testid="next-btn"]').trigger('click')
     expect(store.nextPosition).toHaveBeenCalledOnce()

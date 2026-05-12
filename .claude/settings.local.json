@@ -31,7 +31,28 @@
       "Bash(docker compose *)",
       "Bash(echo \"Build started in background with PID $!\")",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(list\\(d.get\\('paths',{}\\).keys\\(\\)\\)\\)\")",
-      "Bash(grep \"\\\\.js$\")"
+      "Bash(grep \"\\\\.js$\")",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\naren\\\\Documents\\\\GitHub\\\\guess-the-move\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "PowerShell(ls *)",
+      "Bash(./gradlew compileKotlin --info)",
+      "Bash(git stash *)",
+      "Bash(npx oxlint *)",
+      "Bash(xargs cat)",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":8080\")",
+      "Bash(docker port guess-the-move-chessmind-api-1 *)",
+      "PowerShell(Get-Process *)",
+      "Bash(tasklist /FI \"PID eq 9212\")",
+      "Bash(tasklist /FI \"PID eq 13244\")",
+      "PowerShell(Get-NetTCPConnection *)",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); paths=[k for k in data.get\\('contexts',{}\\).get\\('api',{}\\).get\\('mappings',{}\\).get\\('dispatcherServlets',{}\\).get\\('dispatcherServlet',[]\\) if 'analysis' in str\\(k\\)]; print\\(paths\\)\")",
+      "Bash(xargs ls -la)",
+      "Bash(./gradlew --debug)",
+      "Bash(dir \"C:\\\\Program Files\\\\Eclipse Adoptium\\\\\" 2>&1 *)",
+      "Bash(./gradlew tasks *)"
     ]
   }
 }

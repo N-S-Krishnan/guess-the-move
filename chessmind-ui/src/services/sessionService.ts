@@ -3,6 +3,7 @@ import type {
   AddAnalysisMoveResponse,
   CreateSessionResponse,
   GuessResponse,
+  ResumeResponse,
   SetupSessionRequest,
   SetupSessionResponse,
   SkipResponse,
@@ -47,4 +48,17 @@ export async function addAnalysisMove(
 
 export async function deleteLastAnalysisMove(sessionId: string): Promise<void> {
   await api.delete(`/sessions/${sessionId}/analysis/move`)
+}
+
+export async function resumeStudy(sessionId: string): Promise<ResumeResponse> {
+  const { data } = await api.post<ResumeResponse>(`/sessions/${sessionId}/resume`)
+  return data
+}
+
+export async function saveAnnotation(
+  sessionId: string,
+  fen: string,
+  body: { comment?: string; symbol?: string },
+): Promise<void> {
+  await api.put(`/sessions/${sessionId}/annotation`, { fen, ...body })
 }

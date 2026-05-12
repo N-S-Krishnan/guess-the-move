@@ -5,14 +5,19 @@ import com.chessmind.api.client.dto.CompareResponse
 import com.chessmind.api.client.dto.MoveEntry
 import com.chessmind.api.client.dto.ParseResponse
 import com.chessmind.api.client.dto.ValidateResponse
+import com.chessmind.api.dto.AddAnalysisMoveRequest
+import com.chessmind.api.dto.AnnotationRequest
 import com.chessmind.api.dto.GuessRequest
+import com.chessmind.api.dto.ResumeResponse
 import com.chessmind.api.dto.SessionProgress
 import com.chessmind.api.dto.SetupSessionRequest
 import com.chessmind.api.dto.SkipResponse
+import com.chessmind.api.entity.Annotation
 import com.chessmind.api.entity.StudySession
 import com.chessmind.api.exception.AnalysisException
 import com.chessmind.api.exception.SessionConflictException
 import com.chessmind.api.exception.SessionNotFoundException
+import com.chessmind.api.repository.AnnotationRepository
 import com.chessmind.api.repository.StudySessionRepository
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.mockk.coEvery
@@ -37,6 +42,7 @@ class SessionServiceTest {
 
     private val analysisClient: AnalysisClient = mockk()
     private val sessionRepository: StudySessionRepository = mockk()
+    private val annotationRepository: AnnotationRepository = mockk()
     private val valueOps: ValueOperations<String, Any> = mockk()
     private val redisTemplate: RedisTemplate<String, Any> = mockk<RedisTemplate<String, Any>>().also {
         every { it.opsForValue() } returns valueOps
@@ -44,7 +50,7 @@ class SessionServiceTest {
     // Real ObjectMapper with Kotlin module — mirrors the Spring auto-configured bean.
     private val objectMapper = jacksonObjectMapper()
 
-    private val service = SessionService(analysisClient, sessionRepository, redisTemplate, objectMapper)
+    private val service = SessionService(analysisClient, sessionRepository, annotationRepository, redisTemplate, objectMapper)
 
     // 7 full moves (14 plies): moves[0..13]
     private val sampleMoves = (0 until 14).map { i ->
@@ -63,12 +69,17 @@ class SessionServiceTest {
         moves = sampleMoves,
     )
 
-    private fun mockValidateLegal(fen: String, uci: String, san: String = "san_$uci") {
-        coEvery { analysisClient.validate(fen, uci) } returns ValidateResponse(legal = true, san = san)
+    private fun mockValidateLegal(
+        fen: String,
+        uci: String,
+        san: String = "san_$uci",
+        fenAfter: String = "fen_after_$uci",
+    ) {
+        coEvery { analysisClient.validate(fen, uci) } returns ValidateResponse(legal = true, san = san, fenAfter = fenAfter)
     }
 
     private fun mockValidateIllegal(fen: String, uci: String) {
-        coEvery { analysisClient.validate(fen, uci) } returns ValidateResponse(legal = false, san = null)
+        coEvery { analysisClient.validate(fen, uci) } returns ValidateResponse(legal = false, san = null, fenAfter = null)
     }
 
     private fun mockCompare(
@@ -450,7 +461,7 @@ class SessionServiceTest {
         coVerify {
             valueOps.set(
                 "session:${session.id}:progress",
-                SessionProgress(currentFen = "fen_after_ply_1", moveIndex = 2, mode = "guess"),
+                SessionProgress(currentFen = "fen_after_ply_1", moveIndex = 2, mode = "analysis"),
                 24L,
                 TimeUnit.HOURS,
             )
@@ -604,7 +615,7 @@ class SessionServiceTest {
         coVerify {
             valueOps.set(
                 "session:${session.id}:progress",
-                SessionProgress(currentFen = "fen_after_ply_1", moveIndex = 2, mode = "guess"),
+                SessionProgress(currentFen = "fen_after_ply_1", moveIndex = 2, mode = "analysis"),
                 24L,
                 TimeUnit.HOURS,
             )
@@ -655,5 +666,320 @@ class SessionServiceTest {
         every { valueOps.get("session:${session.id}:state") } returns null
 
         assertThrows<IllegalStateException> { service.skipGuess(session.id) }
+    }
+
+    // ── resumeStudy ────────────────────────────────────────────────────────────
+
+    @Test
+    fun `resumeStudy returns current fen and moveIndex`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(2)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        val result = service.resumeStudy(session.id)
+
+        assertEquals("fen_before_ply_2", result.fen)
+        assertEquals(2, result.moveIndex)
+    }
+
+    @Test
+    fun `resumeStudy writes progress with mode=guess to Redis`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(2)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        service.resumeStudy(session.id)
+
+        coVerify {
+            valueOps.set(
+                "session:${session.id}:progress",
+                SessionProgress(currentFen = "fen_before_ply_2", moveIndex = 2, mode = "guess"),
+                24L,
+                TimeUnit.HOURS,
+            )
+        }
+    }
+
+    @Test
+    fun `resumeStudy throws SessionNotFoundException when session does not exist`() = runTest {
+        val id = UUID.randomUUID()
+        every { sessionRepository.findById(id) } returns Optional.empty()
+
+        assertThrows<SessionNotFoundException> { service.resumeStudy(id) }
+    }
+
+    @Test
+    fun `resumeStudy throws SessionConflictException when session is not in_progress`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+
+        assertThrows<SessionConflictException> { service.resumeStudy(session.id) }
+    }
+
+    @Test
+    fun `resumeStudy throws IllegalStateException when progress is missing from Redis`() = runTest {
+        val session = inProgressSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns null
+
+        assertThrows<IllegalStateException> { service.resumeStudy(session.id) }
+    }
+
+    // ── addAnalysisMove ────────────────────────────────────────────────────────
+
+    private fun analysisProgressAt(moveIndex: Int) =
+        SessionProgress(currentFen = "fen_before_ply_$moveIndex", moveIndex = moveIndex, mode = "analysis")
+
+    private fun savedAnnotation(sessionId: UUID, fen: String) = Annotation(
+        sessionId = sessionId,
+        fen = fen,
+        fromFen = "from_fen",
+        moveUci = "uci_move",
+        moveSan = "san_move",
+    )
+
+    @Test
+    fun `addAnalysisMove returns correct response with san and fenAfter`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = analysisProgressAt(0)
+        val annotation = savedAnnotation(session.id, "analysis_fen_after")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.save(any()) } returns annotation
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+        mockValidateLegal("from_fen", "e2e4", fenAfter = "analysis_fen_after")
+
+        val result = service.addAnalysisMove(
+            session.id,
+            AddAnalysisMoveRequest(uciMove = "e2e4", fromFen = "from_fen"),
+        )
+
+        assertEquals(annotation.id.toString(), result.id)
+        assertEquals("san_e2e4", result.san)
+        assertEquals("analysis_fen_after", result.fenAfter)
+    }
+
+    @Test
+    fun `addAnalysisMove appends fenAfter to analysisFens in Redis progress`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = analysisProgressAt(0).copy(analysisFens = listOf("prev_fen"))
+        val annotation = savedAnnotation(session.id, "new_fen")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.save(any()) } returns annotation
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+        mockValidateLegal("from_fen", "e2e4", fenAfter = "new_fen")
+
+        service.addAnalysisMove(session.id, AddAnalysisMoveRequest(uciMove = "e2e4", fromFen = "from_fen"))
+
+        coVerify {
+            valueOps.set(
+                "session:${session.id}:progress",
+                match<SessionProgress> { it.analysisFens == listOf("prev_fen", "new_fen") },
+                24L,
+                TimeUnit.HOURS,
+            )
+        }
+    }
+
+    @Test
+    fun `addAnalysisMove throws IllegalArgumentException when move is illegal`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = analysisProgressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        mockValidateIllegal("from_fen", "e2e5")
+
+        assertThrows<IllegalArgumentException> {
+            service.addAnalysisMove(session.id, AddAnalysisMoveRequest(uciMove = "e2e5", fromFen = "from_fen"))
+        }
+    }
+
+    @Test
+    fun `addAnalysisMove throws SessionNotFoundException when session does not exist`() = runTest {
+        val id = UUID.randomUUID()
+        every { sessionRepository.findById(id) } returns Optional.empty()
+
+        assertThrows<SessionNotFoundException> {
+            service.addAnalysisMove(id, AddAnalysisMoveRequest(uciMove = "e2e4", fromFen = "from_fen"))
+        }
+    }
+
+    @Test
+    fun `addAnalysisMove throws SessionConflictException when session is not in_progress`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+
+        assertThrows<SessionConflictException> {
+            service.addAnalysisMove(session.id, AddAnalysisMoveRequest(uciMove = "e2e4", fromFen = "from_fen"))
+        }
+    }
+
+    @Test
+    fun `addAnalysisMove throws SessionConflictException when progress mode is not analysis`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0, mode = "guess")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+
+        assertThrows<SessionConflictException> {
+            service.addAnalysisMove(session.id, AddAnalysisMoveRequest(uciMove = "e2e4", fromFen = "from_fen"))
+        }
+    }
+
+    // ── deleteLastAnalysisMove ─────────────────────────────────────────────────
+
+    @Test
+    fun `deleteLastAnalysisMove removes last annotation and pops analysisFens`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = analysisProgressAt(0).copy(analysisFens = listOf("fen_1", "fen_2"))
+        val annotation = savedAnnotation(session.id, "fen_2")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findTopBySessionIdOrderByCreatedAtDesc(session.id) } returns annotation
+        justRun { annotationRepository.delete(annotation) }
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        service.deleteLastAnalysisMove(session.id)
+
+        coVerify { annotationRepository.delete(annotation) }
+        coVerify {
+            valueOps.set(
+                "session:${session.id}:progress",
+                match<SessionProgress> { it.analysisFens == listOf("fen_1") },
+                24L,
+                TimeUnit.HOURS,
+            )
+        }
+    }
+
+    @Test
+    fun `deleteLastAnalysisMove throws SessionConflictException when analysisFens is empty`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = analysisProgressAt(0)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+
+        assertThrows<SessionConflictException> { service.deleteLastAnalysisMove(session.id) }
+    }
+
+    @Test
+    fun `deleteLastAnalysisMove throws SessionNotFoundException when session does not exist`() = runTest {
+        val id = UUID.randomUUID()
+        every { sessionRepository.findById(id) } returns Optional.empty()
+
+        assertThrows<SessionNotFoundException> { service.deleteLastAnalysisMove(id) }
+    }
+
+    @Test
+    fun `deleteLastAnalysisMove throws SessionConflictException when session is not in_progress`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+
+        assertThrows<SessionConflictException> { service.deleteLastAnalysisMove(session.id) }
+    }
+
+    @Test
+    fun `deleteLastAnalysisMove throws SessionConflictException when progress mode is not analysis`() = runTest {
+        val session = inProgressSessionFor()
+        val progress = progressAt(0, mode = "guess")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+
+        assertThrows<SessionConflictException> { service.deleteLastAnalysisMove(session.id) }
+    }
+
+    // ── upsertAnnotation ───────────────────────────────────────────────────────
+
+    @Test
+    fun `upsertAnnotation creates new annotation when none exists`() = runTest {
+        val session = inProgressSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { annotationRepository.findTopBySessionIdAndFenOrderByCreatedAtDesc(session.id, "some-fen") } returns null
+        every { annotationRepository.save(any()) } answers { firstArg() }
+
+        service.upsertAnnotation(session.id, AnnotationRequest(fen = "some-fen", comment = "Nice move!"))
+
+        coVerify { annotationRepository.save(match<Annotation> { it.comment == "Nice move!" && it.fen == "some-fen" }) }
+    }
+
+    @Test
+    fun `upsertAnnotation updates existing annotation when found`() = runTest {
+        val session = inProgressSessionFor()
+        val existing = savedAnnotation(session.id, "some-fen").also { it.comment = "old comment" }
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { annotationRepository.findTopBySessionIdAndFenOrderByCreatedAtDesc(session.id, "some-fen") } returns existing
+        every { annotationRepository.save(any()) } answers { firstArg() }
+
+        service.upsertAnnotation(session.id, AnnotationRequest(fen = "some-fen", comment = "new comment"))
+
+        coVerify { annotationRepository.save(match<Annotation> { it.comment == "new comment" }) }
+    }
+
+    @Test
+    fun `upsertAnnotation sets valid symbol`() = runTest {
+        val session = inProgressSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { annotationRepository.findTopBySessionIdAndFenOrderByCreatedAtDesc(session.id, "some-fen") } returns null
+        every { annotationRepository.save(any()) } answers { firstArg() }
+
+        service.upsertAnnotation(session.id, AnnotationRequest(fen = "some-fen", symbol = "!"))
+
+        coVerify { annotationRepository.save(match<Annotation> { it.symbol == "!" }) }
+    }
+
+    @Test
+    fun `upsertAnnotation clears symbol when empty string sent`() = runTest {
+        val session = inProgressSessionFor()
+        val existing = savedAnnotation(session.id, "some-fen").also { it.symbol = "!" }
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { annotationRepository.findTopBySessionIdAndFenOrderByCreatedAtDesc(session.id, "some-fen") } returns existing
+        every { annotationRepository.save(any()) } answers { firstArg() }
+
+        service.upsertAnnotation(session.id, AnnotationRequest(fen = "some-fen", symbol = ""))
+
+        coVerify { annotationRepository.save(match<Annotation> { it.symbol == null }) }
+    }
+
+    @Test
+    fun `upsertAnnotation throws IllegalArgumentException for invalid symbol`() = runTest {
+        val id = UUID.randomUUID()
+
+        assertThrows<IllegalArgumentException> {
+            service.upsertAnnotation(id, AnnotationRequest(fen = "some-fen", symbol = "X"))
+        }
+    }
+
+    @Test
+    fun `upsertAnnotation throws IllegalArgumentException when both comment and symbol are null`() = runTest {
+        val id = UUID.randomUUID()
+
+        assertThrows<IllegalArgumentException> {
+            service.upsertAnnotation(id, AnnotationRequest(fen = "some-fen"))
+        }
+    }
+
+    @Test
+    fun `upsertAnnotation throws SessionNotFoundException when session not found`() = runTest {
+        val id = UUID.randomUUID()
+        every { sessionRepository.findById(id) } returns Optional.empty()
+
+        assertThrows<SessionNotFoundException> {
+            service.upsertAnnotation(id, AnnotationRequest(fen = "some-fen", comment = "hello"))
+        }
+    }
+
+    @Test
+    fun `upsertAnnotation throws SessionConflictException when session not in_progress`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+
+        assertThrows<SessionConflictException> {
+            service.upsertAnnotation(session.id, AnnotationRequest(fen = "some-fen", comment = "hello"))
+        }
     }
 }

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
+import AnalysisPanel from '@/components/AnalysisPanel.vue'
 import ChessBoard from '@/components/ChessBoard.vue'
 import MoveGuessPanel from '@/components/MoveGuessPanel.vue'
 import MoveList from '@/components/MoveList.vue'
@@ -24,16 +25,39 @@ watch(
   },
 )
 
+// Reset the board when returning to guess mode from analysis so chessground's
+// internal position (which may have advanced through analysis moves) is
+// snapped back to the mainline FEN and interactive config is restored.
+watch(
+  () => store.mode,
+  async (newMode, oldMode) => {
+    if (oldMode === 'analysis' && newMode === 'guess') {
+      await nextTick()
+      boardRef.value?.reset?.()
+    }
+  },
+)
+
 const orientationMap: Record<string, Color> = { white: 'white', black: 'black' }
 const orientation = orientationMap[store.playerToGuess ?? 'white'] ?? 'white'
 
 const boardRef = ref<{ reset: () => void } | null>(null)
 
+const boardFen = computed(() => store.activeAnalysisFen ?? '')
+
 async function handleMove(uci: string): Promise<void> {
-  const result = await store.submitGuess(uci)
-  if (result?.correct !== true) {
-    await nextTick()
-    boardRef.value?.reset?.()
+  if (store.mode === 'guess') {
+    const result = await store.submitGuess(uci)
+    if (result?.correct !== true) {
+      await nextTick()
+      boardRef.value?.reset?.()
+    }
+  } else if (store.mode === 'analysis') {
+    await store.addAnalysisMove(uci)
+    if (store.serverError) {
+      await nextTick()
+      boardRef.value?.reset?.()
+    }
   }
 }
 </script>
@@ -43,9 +67,9 @@ async function handleMove(uci: string): Promise<void> {
     <div class="study-board-wrap">
       <ChessBoard
         ref="boardRef"
-        :fen="store.currentFen"
+        :fen="boardFen"
         :orientation="orientation"
-        :interactive="store.mode === 'guess' && !store.isLoading && !store.isAnimating"
+        :interactive="(store.mode === 'guess' || store.mode === 'analysis') && !store.isLoading && !store.isAnimating"
         @move="handleMove"
       />
     </div>
@@ -61,9 +85,9 @@ async function handleMove(uci: string): Promise<void> {
 
     <MoveGuessPanel v-if="store.mode === 'guess'" />
     <div
-      v-else-if="store.mode === 'analysis'"
-      class="analysis-panel"
-      data-testid="analysis-panel"
+      v-else-if="store.mode === 'reviewing'"
+      class="reviewing-panel"
+      data-testid="reviewing-panel"
     >
       <button
         type="button"
@@ -74,6 +98,7 @@ async function handleMove(uci: string): Promise<void> {
         Next position →
       </button>
     </div>
+    <AnalysisPanel v-else-if="store.mode === 'analysis'" />
     <StudyComplete v-else-if="store.mode === 'complete'" />
 
     <MoveList />
@@ -130,7 +155,7 @@ async function handleMove(uci: string): Promise<void> {
   cursor: pointer;
 }
 
-.analysis-panel {
+.reviewing-panel {
   width: min(560px, 100%);
   padding: 1rem 1.25rem;
   background: #f8f9fa;

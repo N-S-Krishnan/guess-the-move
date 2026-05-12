@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import axios from 'axios'
 import * as sessionService from '@/services/sessionService'
-import type { CreateSessionResponse, GuessResponse, PlayerColor, SessionMode, SetupSessionResponse, SkipResponse, VariationNode } from '@/types/session'
+import type { CreateSessionResponse, GuessResponse, PlayerColor, ResumeResponse, SessionMode, SetupSessionResponse, SkipResponse, VariationNode } from '@/types/session'
 
 function extractErrorMessage(err: unknown): string {
   if (axios.isAxiosError(err)) {
@@ -54,6 +54,10 @@ export const useSessionStore = defineStore('session', () => {
   const activeAnalysisFen = computed(
     () => currentPath.value[currentPath.value.length - 1]?.fen ?? currentFen.value,
   )
+
+  // Annotation state for the current analysis position
+  const currentComment = ref<string>('')
+  const currentSymbol = ref<string | null>(null)
 
   async function createSession(pgn: string): Promise<CreateSessionResponse | null> {
     isLoading.value = true
@@ -118,7 +122,7 @@ export const useSessionStore = defineStore('session', () => {
           setTimeout(() => {
             currentFen.value = nextFen   // FEN watcher animates the opponent's reply
             isAnimating.value = false
-            mode.value = 'analysis'
+            mode.value = 'reviewing'
             lastGuessWasCorrect.value = false
           }, 500)
         } else {
@@ -197,6 +201,8 @@ export const useSessionStore = defineStore('session', () => {
         tip.children.push(node)
       }
       currentPath.value.push(node)
+      currentComment.value = ''
+      currentSymbol.value = null
     } catch (err) {
       serverError.value = extractErrorMessage(err)
     } finally {
@@ -227,12 +233,70 @@ export const useSessionStore = defineStore('session', () => {
 
   function jumpToNode(node: VariationNode): void {
     const path = findPath(variationTree.value, node.fen)
-    if (path) currentPath.value = path
+    if (path) {
+      currentPath.value = path
+      currentComment.value = ''
+      currentSymbol.value = null
+    }
   }
 
   function nextPosition(): void {
     currentPath.value = []
-    mode.value = 'guess'
+    currentComment.value = ''
+    currentSymbol.value = null
+    mode.value = 'analysis'
+  }
+
+  async function resumeStudy(): Promise<ResumeResponse | null> {
+    if (!sessionId.value) return null
+    isLoading.value = true
+    serverError.value = null
+    try {
+      const result = await sessionService.resumeStudy(sessionId.value)
+      currentFen.value = result.fen
+      currentPath.value = []
+      currentComment.value = ''
+      currentSymbol.value = null
+      mode.value = 'guess'
+      return result
+    } catch (err) {
+      serverError.value = extractErrorMessage(err)
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function saveComment(): Promise<void> {
+    if (!sessionId.value) return
+    const fen = activeAnalysisFen.value ?? ''
+    if (!fen) return
+    serverError.value = null
+    isLoading.value = true
+    try {
+      await sessionService.saveAnnotation(sessionId.value, fen, { comment: currentComment.value })
+    } catch (err) {
+      serverError.value = extractErrorMessage(err)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function toggleSymbol(symbol: string): Promise<void> {
+    if (!sessionId.value) return
+    const fen = activeAnalysisFen.value ?? ''
+    if (!fen) return
+    const newSymbol = currentSymbol.value === symbol ? '' : symbol
+    serverError.value = null
+    isLoading.value = true
+    try {
+      await sessionService.saveAnnotation(sessionId.value, fen, { symbol: newSymbol })
+      currentSymbol.value = newSymbol === '' ? null : newSymbol
+    } catch (err) {
+      serverError.value = extractErrorMessage(err)
+    } finally {
+      isLoading.value = false
+    }
   }
 
   function clearError() {
@@ -257,6 +321,8 @@ export const useSessionStore = defineStore('session', () => {
     variationTree,
     currentPath,
     activeAnalysisFen,
+    currentComment,
+    currentSymbol,
     createSession,
     setupSession,
     submitGuess,
@@ -265,6 +331,9 @@ export const useSessionStore = defineStore('session', () => {
     takeBackAnalysisMove,
     jumpToNode,
     nextPosition,
+    resumeStudy,
+    saveComment,
+    toggleSymbol,
     clearError,
   }
 })

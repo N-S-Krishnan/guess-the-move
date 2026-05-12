@@ -78,12 +78,14 @@ def validate_move(fen: str, uci_move: str) -> dict[str, Any]:
     try:
         move = chess.Move.from_uci(uci_move)
     except ValueError:
-        return {"legal": False, "san": None}
+        return {"legal": False, "san": None, "fen_after": None}
 
     if move not in board.legal_moves:
-        return {"legal": False, "san": None}
+        return {"legal": False, "san": None, "fen_after": None}
 
-    return {"legal": True, "san": board.san(move)}
+    san = board.san(move)
+    board.push(move)
+    return {"legal": True, "san": san, "fen_after": board.fen()}
 
 
 def compare_move(fen: str, expected_uci: str, submitted_uci: str) -> dict[str, Any]:

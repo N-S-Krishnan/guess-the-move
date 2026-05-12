@@ -1,9 +1,12 @@
 package com.chessmind.api.controller
 
+import com.chessmind.api.dto.AddAnalysisMoveResponse
 import com.chessmind.api.dto.CreateSessionResponse
 import com.chessmind.api.dto.GuessResponse
+import com.chessmind.api.dto.ResumeResponse
 import com.chessmind.api.dto.SetupSessionResponse
 import com.chessmind.api.dto.SkipResponse
+import com.chessmind.api.dto.AnnotationRequest
 import com.chessmind.api.exception.AnalysisException
 import com.chessmind.api.exception.SessionConflictException
 import com.chessmind.api.exception.SessionNotFoundException
@@ -16,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest
 import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.delete
 import org.springframework.test.web.servlet.post
 import org.springframework.test.web.servlet.put
 import java.util.UUID
@@ -372,6 +376,252 @@ class SessionControllerTest {
         mockMvc.post("/api/v1/sessions/$id/skip").andExpect {
             status { isInternalServerError() }
             jsonPath("$.detail") { value("Session progress not found in cache for $id") }
+        }
+    }
+
+    // ── POST /sessions/{id}/resume ─────────────────────────────────────────────
+
+    @Test
+    fun `POST resume returns 200 with fen and moveIndex`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.resumeStudy(id) } returns ResumeResponse(fen = "some-fen", moveIndex = 4)
+
+        mockMvc.post("/api/v1/sessions/$id/resume").andExpect {
+            status { isOk() }
+            jsonPath("$.fen") { value("some-fen") }
+            jsonPath("$.moveIndex") { value(4) }
+        }
+    }
+
+    @Test
+    fun `POST resume when session not found returns 404`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.resumeStudy(id) } throws SessionNotFoundException("Session $id not found")
+
+        mockMvc.post("/api/v1/sessions/$id/resume").andExpect {
+            status { isNotFound() }
+            jsonPath("$.detail") { value("Session $id not found") }
+        }
+    }
+
+    @Test
+    fun `POST resume when session is not in_progress returns 409`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.resumeStudy(id) } throws
+            SessionConflictException("Session $id is not in 'in_progress' state")
+
+        mockMvc.post("/api/v1/sessions/$id/resume").andExpect {
+            status { isConflict() }
+            jsonPath("$.detail") { value("Session $id is not in 'in_progress' state") }
+        }
+    }
+
+    @Test
+    fun `POST resume when Redis progress is missing returns 500`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.resumeStudy(id) } throws
+            IllegalStateException("Session progress not found in cache for $id")
+
+        mockMvc.post("/api/v1/sessions/$id/resume").andExpect {
+            status { isInternalServerError() }
+            jsonPath("$.detail") { value("Session progress not found in cache for $id") }
+        }
+    }
+
+    // ── POST /sessions/{id}/analysis/move ─────────────────────────────────────
+
+    @Test
+    fun `POST analysis move with valid body returns 200 and response`() {
+        val id = UUID.randomUUID()
+        val response = AddAnalysisMoveResponse(id = "ann-id", san = "e4", fenAfter = "some-fen")
+        coEvery { sessionService.addAnalysisMove(id, any()) } returns response
+
+        mockMvc.post("/api/v1/sessions/$id/analysis/move") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("uciMove" to "e2e4", "fromFen" to "start-fen"))
+        }.andExpect {
+            status { isOk() }
+            jsonPath("$.id") { value("ann-id") }
+            jsonPath("$.san") { value("e4") }
+            jsonPath("$.fenAfter") { value("some-fen") }
+        }
+    }
+
+    @Test
+    fun `POST analysis move with blank uciMove returns 400`() {
+        val id = UUID.randomUUID()
+
+        mockMvc.post("/api/v1/sessions/$id/analysis/move") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("uciMove" to "", "fromFen" to "start-fen"))
+        }.andExpect {
+            status { isBadRequest() }
+        }
+    }
+
+    @Test
+    fun `POST analysis move when session not found returns 404`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.addAnalysisMove(id, any()) } throws
+            SessionNotFoundException("Session $id not found")
+
+        mockMvc.post("/api/v1/sessions/$id/analysis/move") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("uciMove" to "e2e4", "fromFen" to "start-fen"))
+        }.andExpect {
+            status { isNotFound() }
+            jsonPath("$.detail") { value("Session $id not found") }
+        }
+    }
+
+    @Test
+    fun `POST analysis move when session mode is not analysis returns 409`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.addAnalysisMove(id, any()) } throws
+            SessionConflictException("Session $id is not in 'analysis' mode")
+
+        mockMvc.post("/api/v1/sessions/$id/analysis/move") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("uciMove" to "e2e4", "fromFen" to "start-fen"))
+        }.andExpect {
+            status { isConflict() }
+            jsonPath("$.detail") { value("Session $id is not in 'analysis' mode") }
+        }
+    }
+
+    @Test
+    fun `POST analysis move when move is illegal returns 400`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.addAnalysisMove(id, any()) } throws
+            IllegalArgumentException("Illegal move: e2e5")
+
+        mockMvc.post("/api/v1/sessions/$id/analysis/move") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("uciMove" to "e2e5", "fromFen" to "start-fen"))
+        }.andExpect {
+            status { isBadRequest() }
+            jsonPath("$.detail") { value("Illegal move: e2e5") }
+        }
+    }
+
+    // ── DELETE /sessions/{id}/analysis/move ───────────────────────────────────
+
+    @Test
+    fun `DELETE analysis move returns 204 on success`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.deleteLastAnalysisMove(id) } returns Unit
+
+        mockMvc.delete("/api/v1/sessions/$id/analysis/move").andExpect {
+            status { isNoContent() }
+        }
+    }
+
+    @Test
+    fun `DELETE analysis move when session not found returns 404`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.deleteLastAnalysisMove(id) } throws
+            SessionNotFoundException("Session $id not found")
+
+        mockMvc.delete("/api/v1/sessions/$id/analysis/move").andExpect {
+            status { isNotFound() }
+            jsonPath("$.detail") { value("Session $id not found") }
+        }
+    }
+
+    @Test
+    fun `DELETE analysis move when no moves to take back returns 409`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.deleteLastAnalysisMove(id) } throws
+            SessionConflictException("No analysis moves to take back for session $id")
+
+        mockMvc.delete("/api/v1/sessions/$id/analysis/move").andExpect {
+            status { isConflict() }
+            jsonPath("$.detail") { value("No analysis moves to take back for session $id") }
+        }
+    }
+
+    // ── PUT /sessions/{id}/annotation ─────────────────────────────────────────
+
+    @Test
+    fun `PUT annotation with valid comment returns 204`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.upsertAnnotation(id, any()) } returns Unit
+
+        mockMvc.put("/api/v1/sessions/$id/annotation") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("fen" to "some-fen", "comment" to "Nice move!"))
+        }.andExpect {
+            status { isNoContent() }
+        }
+    }
+
+    @Test
+    fun `PUT annotation with valid symbol returns 204`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.upsertAnnotation(id, any()) } returns Unit
+
+        mockMvc.put("/api/v1/sessions/$id/annotation") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("fen" to "some-fen", "symbol" to "!"))
+        }.andExpect {
+            status { isNoContent() }
+        }
+    }
+
+    @Test
+    fun `PUT annotation with blank fen returns 400`() {
+        val id = UUID.randomUUID()
+
+        mockMvc.put("/api/v1/sessions/$id/annotation") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("fen" to "", "comment" to "hello"))
+        }.andExpect {
+            status { isBadRequest() }
+        }
+    }
+
+    @Test
+    fun `PUT annotation with invalid symbol returns 400`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.upsertAnnotation(id, any()) } throws
+            IllegalArgumentException("Invalid symbol 'X'. Must be one of: !, ?, !!, ??, !?, ?!")
+
+        mockMvc.put("/api/v1/sessions/$id/annotation") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("fen" to "some-fen", "symbol" to "X"))
+        }.andExpect {
+            status { isBadRequest() }
+            jsonPath("$.detail") { value("Invalid symbol 'X'. Must be one of: !, ?, !!, ??, !?, ?!") }
+        }
+    }
+
+    @Test
+    fun `PUT annotation when session not found returns 404`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.upsertAnnotation(id, any()) } throws
+            SessionNotFoundException("Session $id not found")
+
+        mockMvc.put("/api/v1/sessions/$id/annotation") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("fen" to "some-fen", "comment" to "hello"))
+        }.andExpect {
+            status { isNotFound() }
+            jsonPath("$.detail") { value("Session $id not found") }
+        }
+    }
+
+    @Test
+    fun `PUT annotation when session not in_progress returns 409`() {
+        val id = UUID.randomUUID()
+        coEvery { sessionService.upsertAnnotation(id, any()) } throws
+            SessionConflictException("Session $id is not in 'in_progress' state")
+
+        mockMvc.put("/api/v1/sessions/$id/annotation") {
+            contentType = MediaType.APPLICATION_JSON
+            content = objectMapper.writeValueAsString(mapOf("fen" to "some-fen", "comment" to "hello"))
+        }.andExpect {
+            status { isConflict() }
+            jsonPath("$.detail") { value("Session $id is not in 'in_progress' state") }
         }
     }
 }

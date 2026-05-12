@@ -14,6 +14,7 @@ class ValidateRequest(BaseModel):
 class ValidateResponse(BaseModel):
     legal: bool
     san: str | None
+    fen_after: str | None
 
 
 @router.post("", response_model=ValidateResponse, status_code=200)

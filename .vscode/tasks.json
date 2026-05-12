@@ -1,0 +1,69 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "infra: start postgres + redis",
+      "type": "shell",
+      "command": "docker compose up postgres redis",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "infra",
+        "close": false
+      },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "analysis: start",
+      "type": "shell",
+      "command": "uvicorn app.main:app --reload --port 8000",
+      "options": { "cwd": "${workspaceFolder}/chessmind-analysis" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "app",
+        "close": false
+      },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "api: start (bootRun)",
+      "type": "shell",
+      "command": "./gradlew bootRun",
+      "options": { "cwd": "${workspaceFolder}/api/api" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "app",
+        "close": false
+      },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "ui: start",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": { "cwd": "${workspaceFolder}/chessmind-ui" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "app",
+        "close": false
+      },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "dev: start all",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "infra: start postgres + redis",
+        "analysis: start",
+        "api: start (bootRun)",
+        "ui: start"
+      ],
+      "presentation": { "reveal": "silent" },
+      "group": { "kind": "build", "isDefault": true }
+    }
+  ]
+}

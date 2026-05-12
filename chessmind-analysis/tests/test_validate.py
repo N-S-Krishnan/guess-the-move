@@ -51,6 +51,18 @@ def test_legal_move_san_is_populated() -> None:
     assert data["san"] == "e4"
 
 
+def test_legal_move_fen_after_is_populated() -> None:
+    data = post_validate(STARTING_FEN, "e2e4").json()
+    assert data["fen_after"] is not None
+    assert "e4" in data["fen_after"] or "4" in data["fen_after"]
+
+
+def test_legal_move_fen_after_reflects_new_position() -> None:
+    # After e2e4 from the starting position it is black's turn
+    data = post_validate(STARTING_FEN, "e2e4").json()
+    assert data["fen_after"].split(" ")[1] == "b"
+
+
 def test_another_legal_move_is_also_reported_legal() -> None:
     # d2d4 is legal from the starting position — analogous to an incorrect-but-legal guess
     data = post_validate(STARTING_FEN, "d2d4").json()
@@ -82,6 +94,11 @@ def test_illegal_move_legal_flag_is_false() -> None:
 def test_illegal_move_san_is_null() -> None:
     data = post_validate(STARTING_FEN, "e2e5").json()
     assert data["san"] is None
+
+
+def test_illegal_move_fen_after_is_null() -> None:
+    data = post_validate(STARTING_FEN, "e2e5").json()
+    assert data["fen_after"] is None
 
 
 def test_moving_opponents_piece_is_illegal() -> None:

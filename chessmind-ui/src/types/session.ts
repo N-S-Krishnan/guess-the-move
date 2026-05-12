@@ -14,7 +14,7 @@ export interface SessionRouteState {
 
 export type PlayerColor = 'white' | 'black'
 
-export type SessionMode = 'guess' | 'analysis' | 'complete'
+export type SessionMode = 'guess' | 'reviewing' | 'analysis' | 'complete'
 
 export interface SetupSessionRequest {
   playerToGuess: PlayerColor
@@ -53,4 +53,9 @@ export interface AddAnalysisMoveResponse {
   id: string
   san: string
   fenAfter: string
+}
+
+export interface ResumeResponse {
+  fen: string
+  moveIndex: number
 }

@@ -2,21 +2,26 @@ package com.chessmind.api.service
 
 import com.chessmind.api.client.AnalysisClient
 import com.chessmind.api.client.dto.ParseResponse
+import com.chessmind.api.dto.AddAnalysisMoveRequest
+import com.chessmind.api.dto.AddAnalysisMoveResponse
+import com.chessmind.api.dto.AnnotationRequest
 import com.chessmind.api.dto.CreateSessionResponse
 import com.chessmind.api.dto.GuessRequest
 import com.chessmind.api.dto.GuessResponse
+import com.chessmind.api.dto.ResumeResponse
 import com.chessmind.api.dto.SessionProgress
 import com.chessmind.api.dto.SetupSessionRequest
 import com.chessmind.api.dto.SetupSessionResponse
 import com.chessmind.api.dto.SkipResponse
+import com.chessmind.api.entity.Annotation
 import com.chessmind.api.entity.StudySession
 import com.chessmind.api.exception.SessionConflictException
 import com.chessmind.api.exception.SessionNotFoundException
+import com.chessmind.api.repository.AnnotationRepository
 import com.chessmind.api.repository.StudySessionRepository
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -24,11 +29,11 @@ import java.util.concurrent.TimeUnit
 class SessionService(
     private val analysisClient: AnalysisClient,
     private val sessionRepository: StudySessionRepository,
+    private val annotationRepository: AnnotationRepository,
     private val redisTemplate: RedisTemplate<String, Any>,
     private val objectMapper: ObjectMapper,
 ) {
 
-    @Transactional
     suspend fun createSession(pgn: String): CreateSessionResponse {
         val parsed = analysisClient.parse(pgn)
 
@@ -55,7 +60,6 @@ class SessionService(
         )
     }
 
-    @Transactional
     suspend fun setupSession(sessionId: UUID, request: SetupSessionRequest): SetupSessionResponse {
         if (request.playerToGuess !in setOf("white", "black")) {
             throw IllegalArgumentException("playerToGuess must be 'white' or 'black'")
@@ -125,7 +129,6 @@ class SessionService(
         )
     }
 
-    @Transactional
     suspend fun submitGuess(sessionId: UUID, request: GuessRequest): GuessResponse {
         val session = sessionRepository.findById(sessionId).orElseThrow {
             SessionNotFoundException("Session $sessionId not found")
@@ -170,7 +173,7 @@ class SessionService(
             sessionRepository.save(session)
             redisTemplate.opsForValue().set(
                 "session:$sessionId:progress",
-                SessionProgress(currentFen = nextFen, moveIndex = nextMoveIdx, mode = "guess"),
+                SessionProgress(currentFen = nextFen, moveIndex = nextMoveIdx, mode = "analysis"),
                 24,
                 TimeUnit.HOURS,
             )
@@ -189,7 +192,6 @@ class SessionService(
         }
     }
 
-    @Transactional
     suspend fun skipGuess(sessionId: UUID): SkipResponse {
         val session = sessionRepository.findById(sessionId).orElseThrow {
             SessionNotFoundException("Session $sessionId not found")
@@ -220,7 +222,7 @@ class SessionService(
             sessionRepository.save(session)
             redisTemplate.opsForValue().set(
                 "session:$sessionId:progress",
-                SessionProgress(currentFen = nextFen, moveIndex = nextMoveIdx, mode = "guess"),
+                SessionProgress(currentFen = nextFen, moveIndex = nextMoveIdx, mode = "analysis"),
                 24,
                 TimeUnit.HOURS,
             )
@@ -237,5 +239,140 @@ class SessionService(
             )
             SkipResponse(nextFen = null)
         }
+    }
+
+    suspend fun addAnalysisMove(sessionId: UUID, request: AddAnalysisMoveRequest): AddAnalysisMoveResponse {
+        val session = sessionRepository.findById(sessionId).orElseThrow {
+            SessionNotFoundException("Session $sessionId not found")
+        }
+
+        if (session.status != "in_progress") {
+            throw SessionConflictException("Session $sessionId is not in 'in_progress' state")
+        }
+
+        val rawProgress = redisTemplate.opsForValue().get("session:$sessionId:progress")
+            ?: throw IllegalStateException("Session progress not found in cache for $sessionId")
+        val progress = objectMapper.convertValue(rawProgress, SessionProgress::class.java)
+
+        if (progress.mode != "analysis") {
+            throw SessionConflictException("Session $sessionId is not in 'analysis' mode")
+        }
+
+        val validateResult = analysisClient.validate(request.fromFen, request.uciMove)
+        if (!validateResult.legal) {
+            throw IllegalArgumentException("Illegal move: ${request.uciMove}")
+        }
+
+        val san = requireNotNull(validateResult.san) { "validate returned no SAN for legal move" }
+        val fenAfter = requireNotNull(validateResult.fenAfter) { "validate returned no fenAfter for legal move" }
+
+        val annotation = annotationRepository.save(
+            Annotation(
+                sessionId = sessionId,
+                fen = fenAfter,
+                fromFen = request.fromFen,
+                moveUci = request.uciMove,
+                moveSan = san,
+            ),
+        )
+
+        redisTemplate.opsForValue().set(
+            "session:$sessionId:progress",
+            progress.copy(analysisFens = progress.analysisFens + fenAfter),
+            24,
+            TimeUnit.HOURS,
+        )
+
+        return AddAnalysisMoveResponse(id = annotation.id.toString(), san = san, fenAfter = fenAfter)
+    }
+
+    suspend fun deleteLastAnalysisMove(sessionId: UUID) {
+        val session = sessionRepository.findById(sessionId).orElseThrow {
+            SessionNotFoundException("Session $sessionId not found")
+        }
+
+        if (session.status != "in_progress") {
+            throw SessionConflictException("Session $sessionId is not in 'in_progress' state")
+        }
+
+        val rawProgress = redisTemplate.opsForValue().get("session:$sessionId:progress")
+            ?: throw IllegalStateException("Session progress not found in cache for $sessionId")
+        val progress = objectMapper.convertValue(rawProgress, SessionProgress::class.java)
+
+        if (progress.mode != "analysis") {
+            throw SessionConflictException("Session $sessionId is not in 'analysis' mode")
+        }
+
+        if (progress.analysisFens.isEmpty()) {
+            throw SessionConflictException("No analysis moves to take back for session $sessionId")
+        }
+
+        val annotation = annotationRepository.findTopBySessionIdOrderByCreatedAtDesc(sessionId)
+            ?: throw IllegalStateException("No annotation found for session $sessionId")
+
+        annotationRepository.delete(annotation)
+
+        redisTemplate.opsForValue().set(
+            "session:$sessionId:progress",
+            progress.copy(analysisFens = progress.analysisFens.dropLast(1)),
+            24,
+            TimeUnit.HOURS,
+        )
+    }
+
+    suspend fun upsertAnnotation(sessionId: UUID, request: AnnotationRequest) {
+        if (request.comment == null && request.symbol == null) {
+            throw IllegalArgumentException("At least one of comment or symbol must be provided")
+        }
+        val validSymbols = setOf("!", "?", "!!", "??", "!?", "?!")
+        if (request.symbol != null && request.symbol.isNotEmpty() && request.symbol !in validSymbols) {
+            throw IllegalArgumentException("Invalid symbol '${request.symbol}'. Must be one of: !, ?, !!, ??, !?, ?!")
+        }
+        val session = sessionRepository.findById(sessionId).orElseThrow {
+            SessionNotFoundException("Session $sessionId not found")
+        }
+        if (session.status != "in_progress") {
+            throw SessionConflictException("Session $sessionId is not in 'in_progress' state")
+        }
+        val existing = annotationRepository.findTopBySessionIdAndFenOrderByCreatedAtDesc(sessionId, request.fen)
+        if (existing != null) {
+            if (request.comment != null) existing.comment = request.comment
+            if (request.symbol != null) {
+                existing.symbol = if (request.symbol.isEmpty()) null else request.symbol
+            }
+            annotationRepository.save(existing)
+        } else {
+            annotationRepository.save(
+                Annotation(
+                    sessionId = sessionId,
+                    fen = request.fen,
+                    comment = request.comment,
+                    symbol = if (request.symbol?.isEmpty() == true) null else request.symbol,
+                ),
+            )
+        }
+    }
+
+    suspend fun resumeStudy(sessionId: UUID): ResumeResponse {
+        val session = sessionRepository.findById(sessionId).orElseThrow {
+            SessionNotFoundException("Session $sessionId not found")
+        }
+
+        if (session.status != "in_progress") {
+            throw SessionConflictException("Session $sessionId is not in 'in_progress' state")
+        }
+
+        val rawProgress = redisTemplate.opsForValue().get("session:$sessionId:progress")
+            ?: throw IllegalStateException("Session progress not found in cache for $sessionId")
+        val progress = objectMapper.convertValue(rawProgress, SessionProgress::class.java)
+
+        redisTemplate.opsForValue().set(
+            "session:$sessionId:progress",
+            SessionProgress(currentFen = progress.currentFen, moveIndex = progress.moveIndex, mode = "guess"),
+            24,
+            TimeUnit.HOURS,
+        )
+
+        return ResumeResponse(fen = progress.currentFen, moveIndex = progress.moveIndex)
     }
 }
