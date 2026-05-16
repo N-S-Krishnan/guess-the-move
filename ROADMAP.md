@@ -236,3 +236,123 @@ No new endpoints are required. The existing `POST /validate` endpoint (Feature 3
 - [ ] Applying a symbol a second time removes it (toggle off)
 - [ ] Submitting an invalid symbol value to `PUT /annotation` returns `400`
 - [ ] Variation moves are stored in the `annotations` table and survive a page refresh
+
+---
+
+## Feature 5 — Annotated PGN Export
+
+The user downloads their completed (or in-progress) session as a standard PGN file that includes inline comments, move symbols, and analysis variations — ready to import into Lichess, ChessBase, or any PGN viewer.
+
+### Scope
+
+- A single "Export PGN" button visible in `StudyView` at all times once a session has at least one completed position
+- Spring loads the raw PGN and all annotation rows, assembles a structured game tree, and delegates serialisation to Python
+- Python uses `python-chess` to reconstruct the game with inline comments (`{ }`) and variation lines (`( )`) in standard PGN notation
+- The file is returned as a `text/plain` download with a sensible filename
+
+### `chessmind-analysis` (Python)
+
+- Add `export_pgn(pgn_raw: str, annotations: list[dict]) -> str` to `app/chess_engine.py`
+  - Parse `pgn_raw` to get the mainline game object
+  - Walk the mainline; for each move node look up a matching annotation by FEN and attach `comment` and `symbol` (rendered as a NAG: `$1` for `!`, `$2` for `?`, etc.)
+  - Variation annotation rows (those with a `from_fen` that differs from the preceding mainline FEN) are appended as child variation nodes on the relevant parent node
+  - Return the PGN string produced by `chess.pgn.Game.accept(chess.pgn.StringExporter())`
+- Implement `POST /export` router in `app/routers/export.py`
+  - Accept `{ pgn_raw: str, annotations: list[AnnotationNode] }` where `AnnotationNode` has `fen`, `from_fen`, `move_uci`, `move_san`, `comment`, `symbol`
+  - Delegate to `chess_engine.export_pgn`; return `{ pgn: str }`
+  - Return `400` if the PGN cannot be parsed
+- Register the router in `app/main.py`
+- Write `pytest` tests covering: export with no annotations, export with comments, export with symbols (NAG rendering), export with a variation line, invalid PGN returns 400
+
+### `chessmind-api` (Spring / Kotlin)
+
+- Add client-side DTOs: `ExportAnnotationNode(fen, fromFen, moveUci, moveSan, comment, symbol)` and `ExportRequest(pgnRaw, annotations)`; add `ExportResponse(pgn: String)`
+- Add `suspend fun export(request: ExportRequest): ExportResponse` to `AnalysisClient` interface and implement in `AnalysisClientImpl`
+- Add `suspend fun exportSession(sessionId: UUID): String` to `SessionService`
+  - Load the `StudySession` (reject with 404 if not found)
+  - Load all `Annotation` rows for the session via `AnnotationRepository.findAllBySessionId(sessionId)`
+  - Map entities to `ExportAnnotationNode` instances
+  - Call `analysisClient.export(ExportRequest(pgnRaw = session.pgnRaw, annotations = nodes))`
+  - Return the PGN string
+- Add `GET /api/v1/sessions/{id}/export` to `SessionController`
+  - Call `sessionService.exportSession(id)`
+  - Return `ResponseEntity` with `Content-Type: text/plain` and `Content-Disposition: attachment; filename="chessmind-{id}.pgn"`
+- Unit test `SessionService.exportSession` with mocked repository and `AnalysisClient`
+
+### `chessmind-ui` (Vue 3)
+
+- Add `exportSession(sessionId: string): Promise<Blob>` to `src/services/sessionService.ts`
+  - `GET /sessions/{id}/export` with `responseType: 'blob'`
+  - Trigger a browser download using a temporary object URL
+- Create `src/components/ExportButton.vue`
+  - A single button labelled "Export PGN"
+  - Disabled while `store.mode === 'guess'` and no moves have been completed yet (i.e., `store.currentMoveIdx === store.startMoveIdx`)
+  - Shows a brief loading state while the request is in flight; resets on completion or error
+  - Calls `exportSession(store.sessionId)` and triggers the download
+- Render `<ExportButton />` in `StudyView.vue`, positioned alongside the board controls
+
+### Acceptance Criteria
+
+- [ ] Clicking "Export PGN" downloads a `.pgn` file with the correct filename
+- [ ] The exported PGN is valid and importable into a standard PGN viewer
+- [ ] Comments entered during analysis appear as `{ comment text }` in the exported PGN
+- [ ] Move symbols are rendered as NAG codes (e.g., `!` → `$1`, `?` → `$2`)
+- [ ] Analysis variation moves appear as parenthesised variation lines in the PGN
+- [ ] The export button is disabled when no moves have been played yet
+- [ ] A session with no annotations exports cleanly as a plain PGN of the mainline
+- [ ] Exporting a non-existent session returns 404
+
+---
+
+## Feature 6 — Session History & Resume
+
+Instead of re-uploading a PGN, the user lands on a session list that shows all their past games. They can resume any previous session — even if the Redis cache has expired — picking up exactly where they left off.
+
+### Scope
+
+- The application home page becomes a session list rather than the PGN import form
+- Each session card shows the game title, players, progress, and status
+- A "Resume" button re-initialises the Pinia store and navigates directly to `StudyView`
+- A "New Game" button links to the existing `ImportView`
+- If the Redis cache for a session has expired, Spring rehydrates it transparently before returning the session state
+
+### `chessmind-api` (Spring / Kotlin)
+
+- Add `plyCount: Int` column to `StudySession` entity and populate it during `createSession` (from `parseResponse.plyCount`); add a Flyway migration
+- Add `AnnotationRepository.findAllBySessionId(sessionId: UUID): List<Annotation>`
+- Add `StudySessionRepository.findAllByOrderByCreatedAtDesc(): List<StudySession>`
+- Add DTOs: `SessionSummary(id, white, black, event, status, playerToGuess, currentMoveIdx, plyCount, createdAt)` and `LoadSessionResponse(id, white, black, event, playerToGuess, startMoveNum, currentMoveIdx, currentFen, mode, moves, plyCount)`
+- Add `GET /api/v1/sessions` to `SessionController` — returns `List<SessionSummary>` sorted newest-first; sessions in `pending_setup` are included (partial state)
+- Add `GET /api/v1/sessions/{id}` to `SessionController` — calls `sessionService.loadSession(id)`
+- Add `suspend fun loadSession(sessionId: UUID): LoadSessionResponse` to `SessionService`
+  - Load the `StudySession` from DB; 404 if missing
+  - If `status == "pending_setup"` return a partial response (just metadata, no board state)
+  - Try to read `session:{id}:progress` and `session:{id}:state` from Redis
+  - If either key is absent (cache expired), rehydrate: re-call `analysisClient.parse(session.pgnRaw)`, re-populate both Redis keys with 24-hour TTL, derive `currentFen` from `session.currentMoveIdx`
+  - Resolve `mode` from the Redis progress key (default `"guess"` if rehydrating after expiry)
+  - Return `LoadSessionResponse` with full board state including the full move SAN list
+- Unit test `SessionService.loadSession` for: cache-hit path, cache-miss rehydration path, pending\_setup session, non-existent session
+
+### `chessmind-ui` (Vue 3)
+
+- Add `listSessions(): Promise<SessionSummary[]>` and `getSession(id: string): Promise<LoadSessionResponse>` to `src/services/sessionService.ts`
+- Add `loadSession(id: string): Promise<void>` action to the Pinia session store — calls `getSession`, populates all store fields from `LoadSessionResponse`, and navigates to `/study/:id`
+- Create `src/views/SessionListView.vue`
+  - On mount, calls `listSessions()` and renders a list/grid of session cards
+  - Each card shows: `White vs Black` title, event name, status badge (`In Progress` / `Completed` / `Not started`), progress bar or fraction (`currentMoveIdx / plyCount`) for in-progress sessions
+  - "Resume" button calls `store.loadSession(session.id)`; "Setup" button for `pending_setup` sessions navigates to `/setup/:id`
+  - "New Game" button navigates to `/import`
+  - Empty state: friendly message and a prominent "Import a Game" CTA when no sessions exist
+- Update `src/router/index.ts`: `/` → `SessionListView`; `/import` remains; existing `/setup/:id` and `/study/:id` routes unchanged
+
+### Acceptance Criteria
+
+- [ ] The home page (`/`) shows all past sessions sorted newest-first
+- [ ] Each session card displays both player names, event, status, and progress for in-progress sessions
+- [ ] Clicking "Resume" on an in-progress session opens `StudyView` at the correct position in the correct mode
+- [ ] Resuming a session whose Redis cache has expired works correctly (transparent rehydration)
+- [ ] Clicking "New Game" navigates to the import flow
+- [ ] A `pending_setup` session shows a "Setup" button that navigates to `/setup/:id`
+- [ ] An empty session list shows a helpful empty state rather than a blank page
+- [ ] `GET /sessions/{id}` for a missing session returns 404
+- [ ] `GET /sessions` returns an empty array (not 404) when no sessions exist
