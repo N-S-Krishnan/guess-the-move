@@ -59,3 +59,32 @@ export interface ResumeResponse {
   fen: string
   moveIndex: number
 }
+
+export interface SessionSummary {
+  id: string
+  white: string
+  black: string
+  event: string
+  date: string | null
+  site: string | null
+  status: 'pending_setup' | 'in_progress' | 'completed'
+  playerToGuess: PlayerColor | null
+  currentMoveIdx: number | null
+  plyCount: number | null
+  createdAt: string
+}
+
+export interface LoadSessionResponse {
+  id: string
+  white: string
+  black: string
+  event: string
+  status: string
+  playerToGuess: PlayerColor | null
+  startMoveNum: number | null
+  currentMoveIdx: number | null
+  currentFen: string | null
+  mode: string | null
+  moves: string[] | null
+  plyCount: number | null
+}

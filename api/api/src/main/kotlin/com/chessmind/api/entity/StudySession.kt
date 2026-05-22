@@ -25,6 +25,12 @@ class StudySession(
     @Column(nullable = false)
     val event: String,
 
+    @Column(nullable = true)
+    val date: String? = null,
+
+    @Column(nullable = true)
+    val site: String? = null,
+
     @Column(nullable = false)
     var status: String = "pending_setup",
 
@@ -39,4 +45,7 @@ class StudySession(
 
     @Column(name = "current_move_idx", nullable = true)
     var currentMoveIdx: Int? = null,
+
+    @Column(name = "ply_count", nullable = true)
+    val plyCount: Int? = null,
 )

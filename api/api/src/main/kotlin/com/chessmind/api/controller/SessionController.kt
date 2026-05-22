@@ -7,7 +7,9 @@ import com.chessmind.api.dto.CreateSessionRequest
 import com.chessmind.api.dto.CreateSessionResponse
 import com.chessmind.api.dto.GuessRequest
 import com.chessmind.api.dto.GuessResponse
+import com.chessmind.api.dto.LoadSessionResponse
 import com.chessmind.api.dto.ResumeResponse
+import com.chessmind.api.dto.SessionSummary
 import com.chessmind.api.dto.SetupSessionRequest
 import com.chessmind.api.dto.SetupSessionResponse
 import com.chessmind.api.dto.SkipResponse
@@ -16,10 +18,13 @@ import com.chessmind.api.exception.SessionConflictException
 import com.chessmind.api.exception.SessionNotFoundException
 import com.chessmind.api.service.SessionService
 import jakarta.validation.Valid
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.PutMapping
@@ -32,6 +37,12 @@ import java.util.UUID
 @RestController
 @RequestMapping("/api/v1/sessions")
 class SessionController(private val sessionService: SessionService) {
+
+    @GetMapping
+    fun listSessions(): List<SessionSummary> = sessionService.listSessions()
+
+    @GetMapping("/{id}")
+    suspend fun loadSession(@PathVariable id: UUID): LoadSessionResponse = sessionService.loadSession(id)
 
     @PostMapping
     suspend fun createSession(
@@ -65,6 +76,15 @@ class SessionController(private val sessionService: SessionService) {
     @DeleteMapping("/{id}/analysis/move")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     suspend fun deleteLastAnalysisMove(@PathVariable id: UUID) = sessionService.deleteLastAnalysisMove(id)
+
+    @GetMapping("/{id}/export")
+    suspend fun exportSession(@PathVariable id: UUID): ResponseEntity<String> {
+        val pgn = sessionService.exportSession(id)
+        val headers = HttpHeaders()
+        headers.contentType = MediaType.TEXT_PLAIN
+        headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"chessmind-$id.pgn\"")
+        return ResponseEntity.ok().headers(headers).body(pgn)
+    }
 
     @PutMapping("/{id}/annotation")
     @ResponseStatus(HttpStatus.NO_CONTENT)

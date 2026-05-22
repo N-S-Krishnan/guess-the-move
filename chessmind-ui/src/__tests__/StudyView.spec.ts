@@ -49,6 +49,7 @@ function makeRouter() {
   return createRouter({
     history: createMemoryHistory(),
     routes: [
+      { path: '/', name: 'home', component: { template: '<div />' } },
       { path: '/import', name: 'import', component: { template: '<div />' } },
       { path: '/study/:id', name: 'study', component: StudyView },
     ],
@@ -129,7 +130,7 @@ describe('StudyView', () => {
   it('redirects to import when there is no session state', async () => {
     const { router } = await mountStudyView({ currentFen: null })
     await flushPromises()
-    expect(router.currentRoute.value.name).toBe('import')
+    expect(router.currentRoute.value.name).toBe('home')
   })
 
   it('renders MoveGuessPanel when mode is guess', async () => {
@@ -223,14 +224,14 @@ describe('StudyView', () => {
     expect(wrapper.find('[data-testid="move-guess-panel"]').exists()).toBe(false)
   })
 
-  it('hides the info aside when mode is complete', async () => {
+  it('hides the player/move labels when mode is complete', async () => {
     const { wrapper } = await mountStudyView({ mode: 'complete' })
-    expect(wrapper.find('.study-info').exists()).toBe(false)
+    expect(wrapper.findAll('.study-label').length).toBe(0)
   })
 
-  it('shows the info aside when mode is guess', async () => {
+  it('shows the player/move labels when mode is guess', async () => {
     const { wrapper } = await mountStudyView({ mode: 'guess' })
-    expect(wrapper.find('.study-info').exists()).toBe(true)
+    expect(wrapper.findAll('.study-label').length).toBeGreaterThan(0)
   })
 
   // ── Error feedback (server error display) ─────────────────────────────────
@@ -307,6 +308,6 @@ describe('StudyView', () => {
     store.currentFen = null
     await flushPromises()
 
-    expect(router.currentRoute.value.name).toBe('import')
+    expect(router.currentRoute.value.name).toBe('home')
   })
 })

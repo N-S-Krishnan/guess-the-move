@@ -21,6 +21,7 @@ class ParseResponse(BaseModel):
     black: str
     event: str
     date: str
+    site: str
     result: str
     ply_count: int
     full_move_count: int

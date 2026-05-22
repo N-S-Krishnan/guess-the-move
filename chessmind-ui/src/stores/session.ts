@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import axios from 'axios'
 import * as sessionService from '@/services/sessionService'
-import type { CreateSessionResponse, GuessResponse, PlayerColor, ResumeResponse, SessionMode, SetupSessionResponse, SkipResponse, VariationNode } from '@/types/session'
+import type { CreateSessionResponse, GuessResponse, LoadSessionResponse, PlayerColor, ResumeResponse, SessionMode, SetupSessionResponse, SkipResponse, VariationNode } from '@/types/session'
 
 function extractErrorMessage(err: unknown): string {
   if (axios.isAxiosError(err)) {
@@ -299,6 +299,28 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function loadSession(response: LoadSessionResponse): Promise<void> {
+    sessionId.value = response.id
+    white.value = response.white
+    black.value = response.black
+    playerToGuess.value = (response.playerToGuess as PlayerColor) ?? null
+    currentMoveNumber.value =
+      response.currentMoveIdx != null
+        ? Math.floor(response.currentMoveIdx / 2) + 1
+        : response.startMoveNum
+    currentFen.value = response.currentFen
+    mode.value = (response.mode as SessionMode) ?? null
+    moves.value = response.moves
+    plyCount.value = response.plyCount
+    variationTree.value = []
+    currentPath.value = []
+    currentComment.value = ''
+    currentSymbol.value = null
+    lastGuessResult.value = null
+    isAnimating.value = false
+    serverError.value = null
+  }
+
   function clearError() {
     serverError.value = null
   }
@@ -331,6 +353,7 @@ export const useSessionStore = defineStore('session', () => {
     takeBackAnalysisMove,
     jumpToNode,
     nextPosition,
+    loadSession,
     resumeStudy,
     saveComment,
     toggleSymbol,

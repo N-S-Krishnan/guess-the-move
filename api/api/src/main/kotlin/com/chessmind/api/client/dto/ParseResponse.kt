@@ -7,6 +7,7 @@ data class ParseResponse(
     val black: String,
     val event: String,
     val date: String,
+    val site: String,
     val result: String,
     @JsonProperty("ply_count") val plyCount: Int,
     @JsonProperty("full_move_count") val fullMoveCount: Int,

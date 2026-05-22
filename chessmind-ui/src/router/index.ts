@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import ImportView from '@/views/ImportView.vue'
+import SessionListView from '@/views/SessionListView.vue'
 import SetupView from '@/views/SetupView.vue'
 import StudyView from '@/views/StudyView.vue'
 
@@ -8,7 +9,8 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: '/import',
+      name: 'home',
+      component: SessionListView,
     },
     {
       path: '/import',

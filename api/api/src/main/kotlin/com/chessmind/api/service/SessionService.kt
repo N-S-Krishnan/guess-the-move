@@ -1,6 +1,8 @@
 package com.chessmind.api.service
 
 import com.chessmind.api.client.AnalysisClient
+import com.chessmind.api.client.dto.ExportAnnotationNode
+import com.chessmind.api.client.dto.ExportRequest
 import com.chessmind.api.client.dto.ParseResponse
 import com.chessmind.api.dto.AddAnalysisMoveRequest
 import com.chessmind.api.dto.AddAnalysisMoveResponse
@@ -8,8 +10,10 @@ import com.chessmind.api.dto.AnnotationRequest
 import com.chessmind.api.dto.CreateSessionResponse
 import com.chessmind.api.dto.GuessRequest
 import com.chessmind.api.dto.GuessResponse
+import com.chessmind.api.dto.LoadSessionResponse
 import com.chessmind.api.dto.ResumeResponse
 import com.chessmind.api.dto.SessionProgress
+import com.chessmind.api.dto.SessionSummary
 import com.chessmind.api.dto.SetupSessionRequest
 import com.chessmind.api.dto.SetupSessionResponse
 import com.chessmind.api.dto.SkipResponse
@@ -34,6 +38,99 @@ class SessionService(
     private val objectMapper: ObjectMapper,
 ) {
 
+    fun listSessions(): List<SessionSummary> =
+        sessionRepository.findAllByOrderByCreatedAtDesc().map { session ->
+            SessionSummary(
+                id = session.id.toString(),
+                white = session.white,
+                black = session.black,
+                event = session.event,
+                date = session.date,
+                site = session.site,
+                status = session.status,
+                playerToGuess = session.playerToGuess,
+                currentMoveIdx = session.currentMoveIdx,
+                plyCount = session.plyCount,
+                createdAt = session.createdAt.toString(),
+            )
+        }
+
+    suspend fun loadSession(sessionId: UUID): LoadSessionResponse {
+        val session = sessionRepository.findById(sessionId).orElseThrow {
+            SessionNotFoundException("Session $sessionId not found")
+        }
+
+        if (session.status == "pending_setup") {
+            return LoadSessionResponse(
+                id = session.id.toString(),
+                white = session.white,
+                black = session.black,
+                event = session.event,
+                status = session.status,
+                playerToGuess = null,
+                startMoveNum = null,
+                currentMoveIdx = null,
+                currentFen = null,
+                mode = null,
+                moves = null,
+                plyCount = session.plyCount,
+            )
+        }
+
+        // Attempt to read both Redis keys; rehydrate from DB if either is absent.
+        val cachedState = redisTemplate.opsForValue().get("session:$sessionId:state")
+        val cachedProgress = redisTemplate.opsForValue().get("session:$sessionId:progress")
+
+        val parseResponse: ParseResponse
+        val progress: SessionProgress
+
+        if (cachedState != null && cachedProgress != null) {
+            parseResponse = objectMapper.convertValue(cachedState, ParseResponse::class.java)
+            progress = objectMapper.convertValue(cachedProgress, SessionProgress::class.java)
+        } else {
+            // Cache expired — re-parse and repopulate.
+            parseResponse = analysisClient.parse(session.pgnRaw)
+            redisTemplate.opsForValue().set(
+                "session:$sessionId:state",
+                parseResponse,
+                24,
+                TimeUnit.HOURS,
+            )
+            val moveIdx = session.currentMoveIdx ?: 0
+            val currentFen = when {
+                moveIdx == 0 -> parseResponse.startingFen
+                moveIdx - 1 < parseResponse.moves.size -> parseResponse.moves[moveIdx - 1].fenAfter
+                else -> parseResponse.moves.last().fenAfter
+            }
+            progress = SessionProgress(currentFen = currentFen, moveIndex = moveIdx, mode = "guess")
+            redisTemplate.opsForValue().set(
+                "session:$sessionId:progress",
+                progress,
+                24,
+                TimeUnit.HOURS,
+            )
+        }
+
+        return LoadSessionResponse(
+            id = session.id.toString(),
+            white = session.white,
+            black = session.black,
+            event = session.event,
+            status = session.status,
+            playerToGuess = session.playerToGuess,
+            startMoveNum = session.startMoveNum,
+            currentMoveIdx = progress.moveIndex,
+            currentFen = progress.currentFen,
+            mode = when {
+                session.status == "completed" -> "complete"
+                progress.mode == "analysis" -> "guess"
+                else -> progress.mode
+            },
+            moves = parseResponse.moves.map { it.san },
+            plyCount = session.plyCount ?: parseResponse.plyCount,
+        )
+    }
+
     suspend fun createSession(pgn: String): CreateSessionResponse {
         val parsed = analysisClient.parse(pgn)
 
@@ -42,6 +139,9 @@ class SessionService(
             white = parsed.white,
             black = parsed.black,
             event = parsed.event,
+            date = parsed.date,
+            site = parsed.site,
+            plyCount = parsed.plyCount,
         )
         val saved = sessionRepository.save(session)
 
@@ -334,7 +434,7 @@ class SessionService(
         if (session.status != "in_progress") {
             throw SessionConflictException("Session $sessionId is not in 'in_progress' state")
         }
-        val existing = annotationRepository.findTopBySessionIdAndFenOrderByCreatedAtDesc(sessionId, request.fen)
+        val existing = annotationRepository.findTopBySessionIdAndFenAndMoveUciIsNullOrderByCreatedAtDesc(sessionId, request.fen)
         if (existing != null) {
             if (request.comment != null) existing.comment = request.comment
             if (request.symbol != null) {
@@ -351,6 +451,25 @@ class SessionService(
                 ),
             )
         }
+    }
+
+    suspend fun exportSession(sessionId: UUID): String {
+        val session = sessionRepository.findById(sessionId).orElseThrow {
+            SessionNotFoundException("Session $sessionId not found")
+        }
+
+        val annotations = annotationRepository.findAllBySessionId(sessionId).map { ann ->
+            ExportAnnotationNode(
+                fen = ann.fen,
+                fromFen = ann.fromFen,
+                moveUci = ann.moveUci,
+                moveSan = ann.moveSan,
+                comment = ann.comment,
+                symbol = ann.symbol,
+            )
+        }
+
+        return analysisClient.export(ExportRequest(pgnRaw = session.pgnRaw, annotations = annotations)).pgn
     }
 
     suspend fun resumeStudy(sessionId: UUID): ResumeResponse {

@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import AnalysisPanel from '@/components/AnalysisPanel.vue'
 import ChessBoard from '@/components/ChessBoard.vue'
+import ExportButton from '@/components/ExportButton.vue'
 import MoveGuessPanel from '@/components/MoveGuessPanel.vue'
 import MoveList from '@/components/MoveList.vue'
 import StudyComplete from '@/components/StudyComplete.vue'
@@ -14,14 +15,14 @@ const store = useSessionStore()
 
 onMounted(() => {
   if (!store.currentFen) {
-    router.replace({ name: 'import' })
+    router.replace({ name: 'home' })
   }
 })
 
 watch(
   () => store.currentFen,
   (fen) => {
-    if (!fen) router.replace({ name: 'import' })
+    if (!fen) router.replace({ name: 'home' })
   },
 )
 
@@ -95,7 +96,7 @@ async function handleMove(uci: string): Promise<void> {
         data-testid="next-btn"
         @click="store.nextPosition()"
       >
-        Next position →
+        Analyze from position →
       </button>
     </div>
     <AnalysisPanel v-else-if="store.mode === 'analysis'" />
@@ -103,15 +104,18 @@ async function handleMove(uci: string): Promise<void> {
 
     <MoveList />
 
-    <aside v-if="store.mode !== 'complete'" class="study-info">
-      <p class="study-label">
-        Guessing as
-        <strong>{{ store.playerToGuess === 'white' ? 'White' : 'Black' }}</strong>
-      </p>
-      <p class="study-label">
-        Starting from move
-        <strong>{{ store.currentMoveNumber }}</strong>
-      </p>
+    <aside class="study-info">
+      <template v-if="store.mode !== 'complete'">
+        <p class="study-label">
+          Guessing as
+          <strong>{{ store.playerToGuess === 'white' ? 'White' : 'Black' }}</strong>
+        </p>
+        <p class="study-label">
+          Move
+          <strong>{{ store.currentMoveNumber }}</strong>
+        </p>
+      </template>
+      <ExportButton />
     </aside>
   </main>
 </template>
@@ -131,7 +135,10 @@ async function handleMove(uci: string): Promise<void> {
 
 .study-info {
   display: flex;
+  align-items: center;
   gap: 2rem;
+  width: min(560px, 100%);
+  justify-content: space-between;
 }
 
 .study-label {

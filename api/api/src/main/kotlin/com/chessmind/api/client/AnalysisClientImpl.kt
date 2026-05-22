@@ -2,6 +2,8 @@ package com.chessmind.api.client
 
 import com.chessmind.api.client.dto.CompareRequest
 import com.chessmind.api.client.dto.CompareResponse
+import com.chessmind.api.client.dto.ExportRequest
+import com.chessmind.api.client.dto.ExportResponse
 import com.chessmind.api.client.dto.ParseRequest
 import com.chessmind.api.client.dto.ParseResponse
 import com.chessmind.api.client.dto.ValidateRequest
@@ -56,4 +58,17 @@ class AnalysisClientImpl(private val analysisRestClient: RestClient) : AnalysisC
                 throw IllegalStateException("Analysis service rejected chess data during comparison: ${e.responseBodyAsString}")
             }
         }
+
+    override suspend fun export(request: ExportRequest): ExportResponse = withContext(Dispatchers.IO) {
+        try {
+            analysisRestClient.post()
+                .uri("/export")
+                .body(request)
+                .retrieve()
+                .body(ExportResponse::class.java)
+                ?: throw IllegalStateException("Empty response from analysis service")
+        } catch (e: HttpClientErrorException.BadRequest) {
+            throw IllegalArgumentException("Analysis service rejected PGN during export: ${e.responseBodyAsString}")
+        }
+    }
 }

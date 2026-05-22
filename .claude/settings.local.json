@@ -52,7 +52,17 @@
       "Bash(xargs ls -la)",
       "Bash(./gradlew --debug)",
       "Bash(dir \"C:\\\\Program Files\\\\Eclipse Adoptium\\\\\" 2>&1 *)",
-      "Bash(./gradlew tasks *)"
+      "Bash(./gradlew tasks *)",
+      "Bash(python -m pytest tests/test_export.py -v)",
+      "Bash(python -m pip show pytest)",
+      "Bash(python -c \"import chess; print\\('chess ok'\\)\")",
+      "Bash(where python *)",
+      "Bash(where python3 *)",
+      "Bash(py --version)",
+      "Bash(py -3.14 -m pip show pytest)",
+      "Bash(py -3.14 -m pip show python-chess)",
+      "Bash(py -m pip list)",
+      "PowerShell(docker run *)"
     ]
   }
 }

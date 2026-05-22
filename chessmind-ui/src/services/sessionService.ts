@@ -3,7 +3,9 @@ import type {
   AddAnalysisMoveResponse,
   CreateSessionResponse,
   GuessResponse,
+  LoadSessionResponse,
   ResumeResponse,
+  SessionSummary,
   SetupSessionRequest,
   SetupSessionResponse,
   SkipResponse,
@@ -61,4 +63,21 @@ export async function saveAnnotation(
   body: { comment?: string; symbol?: string },
 ): Promise<void> {
   await api.put(`/sessions/${sessionId}/annotation`, { fen, ...body })
+}
+
+export async function listSessions(): Promise<SessionSummary[]> {
+  const { data } = await api.get<SessionSummary[]>('/sessions')
+  return data
+}
+
+export async function getSession(sessionId: string): Promise<LoadSessionResponse> {
+  const { data } = await api.get<LoadSessionResponse>(`/sessions/${sessionId}`)
+  return data
+}
+
+export async function exportSession(sessionId: string): Promise<Blob> {
+  const { data } = await api.get<Blob>(`/sessions/${sessionId}/export`, {
+    responseType: 'blob',
+  })
+  return data
 }

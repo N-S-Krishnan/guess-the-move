@@ -2,9 +2,13 @@ package com.chessmind.api.service
 
 import com.chessmind.api.client.AnalysisClient
 import com.chessmind.api.client.dto.CompareResponse
+import com.chessmind.api.client.dto.ExportAnnotationNode
+import com.chessmind.api.client.dto.ExportRequest
+import com.chessmind.api.client.dto.ExportResponse
 import com.chessmind.api.client.dto.MoveEntry
 import com.chessmind.api.client.dto.ParseResponse
 import com.chessmind.api.client.dto.ValidateResponse
+import com.chessmind.api.dto.LoadSessionResponse
 import com.chessmind.api.dto.AddAnalysisMoveRequest
 import com.chessmind.api.dto.AnnotationRequest
 import com.chessmind.api.dto.GuessRequest
@@ -349,6 +353,20 @@ class SessionServiceTest {
 
     private fun inProgressSessionFor(id: UUID = UUID.randomUUID()) =
         savedSessionFor(id).also { it.status = "in_progress"; it.currentMoveIdx = 0 }
+
+    private fun fullInProgressSessionFor(id: UUID = UUID.randomUUID()) = StudySession(
+        id = id,
+        pgnRaw = "1. e4",
+        white = sampleParsed.white,
+        black = sampleParsed.black,
+        event = sampleParsed.event,
+        plyCount = 14,
+    ).also {
+        it.status = "in_progress"
+        it.currentMoveIdx = 2
+        it.playerToGuess = "white"
+        it.startMoveNum = 2
+    }
 
     private fun progressAt(moveIndex: Int, mode: String = "guess") =
         SessionProgress(currentFen = "fen_before_ply_$moveIndex", moveIndex = moveIndex, mode = mode)
@@ -981,5 +999,166 @@ class SessionServiceTest {
         assertThrows<SessionConflictException> {
             service.upsertAnnotation(session.id, AnnotationRequest(fen = "some-fen", comment = "hello"))
         }
+    }
+
+    // ── exportSession ──────────────────────────────────────────────────────────
+
+    @Test
+    fun `exportSession returns pgn string from analysis service`() = runTest {
+        val session = inProgressSessionFor()
+        val annotation = savedAnnotation(session.id, "some_fen").also { it.comment = "Nice!" }
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { annotationRepository.findAllBySessionId(session.id) } returns listOf(annotation)
+        coEvery { analysisClient.export(any()) } returns ExportResponse(pgn = "1. e4 e5 *")
+
+        val result = service.exportSession(session.id)
+
+        assertEquals("1. e4 e5 *", result)
+    }
+
+    @Test
+    fun `exportSession passes all annotation fields to analysis client`() = runTest {
+        val session = inProgressSessionFor()
+        val annotation = Annotation(
+            sessionId = session.id,
+            fen = "target_fen",
+            fromFen = "source_fen",
+            moveUci = "e2e4",
+            moveSan = "e4",
+            comment = "strong move",
+            symbol = "!",
+        )
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { annotationRepository.findAllBySessionId(session.id) } returns listOf(annotation)
+        val exportRequestSlot = slot<ExportRequest>()
+        coEvery { analysisClient.export(capture(exportRequestSlot)) } returns ExportResponse(pgn = "*")
+
+        service.exportSession(session.id)
+
+        val node = exportRequestSlot.captured.annotations.single()
+        assertEquals("target_fen", node.fen)
+        assertEquals("source_fen", node.fromFen)
+        assertEquals("e2e4", node.moveUci)
+        assertEquals("e4", node.moveSan)
+        assertEquals("strong move", node.comment)
+        assertEquals("!", node.symbol)
+    }
+
+    @Test
+    fun `exportSession passes empty annotation list when no annotations exist`() = runTest {
+        val session = inProgressSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { annotationRepository.findAllBySessionId(session.id) } returns emptyList()
+        val requestSlot = slot<ExportRequest>()
+        coEvery { analysisClient.export(capture(requestSlot)) } returns ExportResponse(pgn = "*")
+
+        service.exportSession(session.id)
+
+        assertEquals(emptyList<ExportAnnotationNode>(), requestSlot.captured.annotations)
+    }
+
+    @Test
+    fun `exportSession throws SessionNotFoundException when session does not exist`() = runTest {
+        val id = UUID.randomUUID()
+        every { sessionRepository.findById(id) } returns Optional.empty()
+
+        assertThrows<SessionNotFoundException> { service.exportSession(id) }
+    }
+
+    // ── listSessions ───────────────────────────────────────────────────────────
+
+    @Test
+    fun `listSessions returns empty list when no sessions exist`() {
+        every { sessionRepository.findAllByOrderByCreatedAtDesc() } returns emptyList()
+
+        val result = service.listSessions()
+
+        assertEquals(emptyList<Any>(), result)
+    }
+
+    @Test
+    fun `listSessions maps session fields to SessionSummary`() {
+        val session = fullInProgressSessionFor()
+        every { sessionRepository.findAllByOrderByCreatedAtDesc() } returns listOf(session)
+
+        val result = service.listSessions()
+
+        assertEquals(1, result.size)
+        val summary = result.first()
+        assertEquals(session.id.toString(), summary.id)
+        assertEquals("Magnus Carlsen", summary.white)
+        assertEquals("Fabiano Caruana", summary.black)
+        assertEquals("in_progress", summary.status)
+        assertEquals("white", summary.playerToGuess)
+        assertEquals(2, summary.currentMoveIdx)
+        assertEquals(14, summary.plyCount)
+    }
+
+    // ── loadSession ────────────────────────────────────────────────────────────
+
+    @Test
+    fun `loadSession returns pending_setup response without board state`() = runTest {
+        val session = savedSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+
+        val result = service.loadSession(session.id)
+
+        assertEquals("pending_setup", result.status)
+        assertEquals(null, result.currentFen)
+        assertEquals(null, result.mode)
+        assertEquals(null, result.moves)
+    }
+
+    @Test
+    fun `loadSession returns full response from Redis cache when keys are present`() = runTest {
+        val session = fullInProgressSessionFor()
+        val progress = SessionProgress(currentFen = "cached_fen", moveIndex = 2, mode = "guess")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+
+        val result = service.loadSession(session.id)
+
+        assertEquals("cached_fen", result.currentFen)
+        assertEquals("guess", result.mode)
+        assertEquals(14, result.moves?.size)
+        assertEquals(sampleMoves.map { it.san }, result.moves)
+    }
+
+    @Test
+    fun `loadSession rehydrates Redis when cache is expired`() = runTest {
+        val session = fullInProgressSessionFor()
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns null
+        every { valueOps.get("session:${session.id}:progress") } returns null
+        coEvery { analysisClient.parse(any()) } returns sampleParsed
+        justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+
+        val result = service.loadSession(session.id)
+
+        assertEquals("guess", result.mode)
+        assertEquals(14, result.moves?.size)
+        coVerify { analysisClient.parse(session.pgnRaw) }
+    }
+
+    @Test
+    fun `loadSession returns mode=complete when session status is completed`() = runTest {
+        val session = fullInProgressSessionFor().also { it.status = "completed" }
+        val progress = SessionProgress(currentFen = "final_fen", moveIndex = 14, mode = "complete")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+
+        val result = service.loadSession(session.id)
+
+        assertEquals("complete", result.mode)
+    }
+
+    @Test
+    fun `loadSession throws SessionNotFoundException when session does not exist`() = runTest {
+        val id = UUID.randomUUID()
+        every { sessionRepository.findById(id) } returns Optional.empty()
+
+        assertThrows<SessionNotFoundException> { service.loadSession(id) }
     }
 }

@@ -347,12 +347,12 @@ Instead of re-uploading a PGN, the user lands on a session list that shows all t
 
 ### Acceptance Criteria
 
-- [ ] The home page (`/`) shows all past sessions sorted newest-first
-- [ ] Each session card displays both player names, event, status, and progress for in-progress sessions
-- [ ] Clicking "Resume" on an in-progress session opens `StudyView` at the correct position in the correct mode
-- [ ] Resuming a session whose Redis cache has expired works correctly (transparent rehydration)
-- [ ] Clicking "New Game" navigates to the import flow
-- [ ] A `pending_setup` session shows a "Setup" button that navigates to `/setup/:id`
-- [ ] An empty session list shows a helpful empty state rather than a blank page
-- [ ] `GET /sessions/{id}` for a missing session returns 404
-- [ ] `GET /sessions` returns an empty array (not 404) when no sessions exist
+- [x] The home page (`/`) shows all past sessions sorted newest-first
+- [x] Each session card displays both player names, event, status, and progress for in-progress sessions
+- [x] Clicking "Resume" on an in-progress session opens `StudyView` at the correct position in the correct mode
+- [x] Resuming a session whose Redis cache has expired works correctly (transparent rehydration)
+- [x] Clicking "New Game" navigates to the import flow
+- [x] A `pending_setup` session shows a "Setup" button that navigates to `/setup/:id`
+- [x] An empty session list shows a helpful empty state rather than a blank page
+- [x] `GET /sessions/{id}` for a missing session returns 404
+- [x] `GET /sessions` returns an empty array (not 404) when no sessions exist

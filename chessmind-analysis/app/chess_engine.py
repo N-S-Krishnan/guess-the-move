@@ -4,6 +4,16 @@ from typing import Any
 import chess
 import chess.pgn
 
+# Maps annotation symbol strings to standard PGN NAG integers.
+_SYMBOL_TO_NAG: dict[str, int] = {
+    "!": chess.pgn.NAG_GOOD_MOVE,
+    "?": chess.pgn.NAG_MISTAKE,
+    "!!": chess.pgn.NAG_BRILLIANT_MOVE,
+    "??": chess.pgn.NAG_BLUNDER,
+    "!?": chess.pgn.NAG_SPECULATIVE_MOVE,
+    "?!": chess.pgn.NAG_DUBIOUS_MOVE,
+}
+
 
 def parse_pgn(pgn: str) -> dict[str, Any]:
     """
@@ -39,6 +49,7 @@ def parse_pgn(pgn: str) -> dict[str, Any]:
     black = headers.get("Black", "?")
     event = headers.get("Event", "?")
     date = headers.get("Date", "????.??.??")
+    site = headers.get("Site", "?")
     result = headers.get("Result", "*")
 
     ply_count = len(moves)
@@ -49,6 +60,7 @@ def parse_pgn(pgn: str) -> dict[str, Any]:
         "black": black,
         "event": event,
         "date": date,
+        "site": site,
         "result": result,
         "ply_count": ply_count,
         "full_move_count": full_move_count,
@@ -149,3 +161,77 @@ def compare_move(fen: str, expected_uci: str, submitted_uci: str) -> dict[str, A
         "expected_san": expected_san,
         "fen_after": fen_after,
     }
+
+
+def _attach_to_node(
+    node: chess.pgn.GameNode,
+    variation_map: dict[str, list[dict[str, Any]]],
+    comment_map: dict[str, dict[str, Any]],
+) -> None:
+    """Attach comment, NAG, and variation subtrees to a single game node."""
+    board_fen = node.board().fen()
+
+    ann = comment_map.get(board_fen)
+    if ann:
+        if ann.get("comment"):
+            node.comment = ann["comment"]
+        nag = _SYMBOL_TO_NAG.get(ann.get("symbol") or "")
+        if nag is not None:
+            node.nags.add(nag)
+
+    for var_ann in variation_map.get(board_fen, []):
+        uci = var_ann.get("move_uci")
+        if not uci:
+            continue
+        try:
+            move = chess.Move.from_uci(uci)
+            if move not in node.board().legal_moves:
+                continue
+            var_node = node.add_variation(move)
+            if var_ann.get("comment"):
+                var_node.comment = var_ann["comment"]
+            var_nag = _SYMBOL_TO_NAG.get(var_ann.get("symbol") or "")
+            if var_nag is not None:
+                var_node.nags.add(var_nag)
+            _attach_to_node(var_node, variation_map, comment_map)
+        except ValueError:
+            continue
+
+
+def export_pgn(pgn_raw: str, annotations: list[dict[str, Any]]) -> str:
+    """
+    Reconstruct a game from its raw PGN and a flat list of annotation dicts,
+    attaching comments, NAG symbols, and analysis variation subtrees, then
+    return the resulting annotated PGN string.
+
+    Each annotation dict may contain: fen, from_fen, move_uci, move_san,
+    comment, symbol.  Dicts with move_uci set are treated as variation moves;
+    dicts without move_uci are treated as comment/symbol annotations on a
+    position.
+
+    Raises ValueError if the PGN cannot be parsed.
+    """
+    pgn_io = io.StringIO(pgn_raw.strip())
+    game = chess.pgn.read_game(pgn_io)
+    if game is None or not game.variations:
+        raise ValueError("No game found in PGN input")
+
+    variation_map: dict[str, list[dict[str, Any]]] = {}
+    comment_map: dict[str, dict[str, Any]] = {}
+
+    for ann in annotations:
+        if ann.get("move_uci"):
+            from_fen = ann.get("from_fen")
+            if from_fen:
+                variation_map.setdefault(from_fen, []).append(ann)
+        else:
+            fen = ann.get("fen")
+            if fen:
+                comment_map[fen] = ann
+
+    _attach_to_node(game, variation_map, comment_map)
+    for node in game.mainline():
+        _attach_to_node(node, variation_map, comment_map)
+
+    exporter = chess.pgn.StringExporter(headers=True, variations=True, comments=True)
+    return game.accept(exporter)

@@ -7,4 +7,6 @@ import java.util.UUID
 interface AnnotationRepository : JpaRepository<Annotation, UUID> {
     fun findTopBySessionIdOrderByCreatedAtDesc(sessionId: UUID): Annotation?
     fun findTopBySessionIdAndFenOrderByCreatedAtDesc(sessionId: UUID, fen: String): Annotation?
+    fun findTopBySessionIdAndFenAndMoveUciIsNullOrderByCreatedAtDesc(sessionId: UUID, fen: String): Annotation?
+    fun findAllBySessionId(sessionId: UUID): List<Annotation>
 }
