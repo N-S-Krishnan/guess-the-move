@@ -356,3 +356,121 @@ Instead of re-uploading a PGN, the user lands on a session list that shows all t
 - [x] An empty session list shows a helpful empty state rather than a blank page
 - [x] `GET /sessions/{id}` for a missing session returns 404
 - [x] `GET /sessions` returns an empty array (not 404) when no sessions exist
+
+---
+
+## Feature 7 — Multi-Variation Navigation & Keyboard Control
+
+After exploring variations in analysis mode, the user resumes the session later and finds their entire analysis tree intact. They navigate it with arrow keys — forward, backward, and across sibling branches — without waiting for the server. Playing a move that already exists in the tree steps into it rather than creating a duplicate.
+
+### Scope
+
+- The full variation tree is restored when a session is resumed (currently `variationTree` is reset to `[]` on every load)
+- Playing a move that already exists as a child of the current node navigates into it instead of creating a duplicate annotation row
+- Arrow keys navigate the tree in analysis mode: `←`/`→` for back/forward, `↑`/`↓` to cycle siblings at a branch point, `Ctrl+→`/`Ctrl+←` to jump to the end or start of the current line
+- `AnalysisPanel` is upgraded from a flat move sequence to a `VariationTree` component that renders branching lines in PGN-book style, with the active node highlighted and branch-choice chips shown when the current position has multiple children
+- Keyboard shortcuts are inert in guess mode and never intercept keystrokes inside `CommentEditor`
+
+### `chessmind-analysis` (Python)
+
+No changes required.
+
+### `chessmind-api` (Spring / Kotlin)
+
+- Add `AnnotationTreeNode` DTO:
+  ```kotlin
+  data class AnnotationTreeNode(
+      val id: UUID,
+      val san: String,
+      val uci: String,
+      val fen: String,
+      val fromFen: String?,
+      val symbol: String?,
+      val comment: String?,
+      val children: List<AnnotationTreeNode>,
+  )
+  ```
+- Add `variationTree: List<AnnotationTreeNode>` to `LoadSessionResponse`; default to an empty list when the session has no annotations
+- In `SessionService.loadSession`, after loading all `Annotation` rows via `AnnotationRepository.findAllBySessionId`:
+  - Build the tree in memory: collect rows with `parentId == null` as roots; recursively attach children by matching `parentId` to `id`; preserve insertion order within each children list via `createdAt`
+  - Map each `Annotation` entity to `AnnotationTreeNode` (omit rows that represent position-only comment/symbol annotations, i.e. those where `moveUci` is null)
+  - Attach the assembled list to `LoadSessionResponse.variationTree`
+- Unit test `SessionService.loadSession` tree-building for: no annotations (empty list), a single linear line, a forking tree with two sibling branches, and a mix of move nodes and comment-only nodes (the latter must be excluded from the tree)
+
+### `chessmind-ui` (Vue 3)
+
+**Store — new pure-local navigation actions:**
+
+All four navigation actions mutate `currentPath` only; they never call the server. The board reacts through the existing `activeAnalysisFen` computed.
+
+- `navigateForward(): void` — advance to `currentPath.tip.children[0]`; no-op if the current node has no children or `currentPath` is empty and `variationTree` is empty
+- `navigateBackward(): void` — pop the last node from `currentPath`; no-op if already at the root of analysis
+- `navigateSiblingDown(): void` — find the current tip's siblings (the children list of its parent, or the top-level `variationTree` if `currentPath.length === 1`); advance to the next sibling; wrap around
+- `navigateSiblingUp(): void` — same but reverse direction
+- `navigateToEnd(): void` — repeatedly follow `children[0]` from the current tip until reaching a leaf; replace the tail of `currentPath` with that chain
+- `navigateToStart(): void` — clear `currentPath` (same effect as clicking the mainline root)
+
+**Store — fix `addAnalysisMove`:**
+
+Before calling `sessionService.addAnalysisMove`, check whether the played UCI already exists as a child of the current path tip (or in `variationTree` if `currentPath` is empty). If a matching node is found, call `navigateForward` to that child and return — no server call, no new annotation row.
+
+**Store — fix `loadSession`:**
+
+Map `LoadSessionResponse.variationTree` into `variationTree.value` using a recursive helper instead of resetting to `[]`. `currentPath` is still cleared on load.
+
+**New composable `src/composables/useVariationKeyNav.ts`:**
+
+- Registers a `keydown` listener on `document` when the composable is mounted; removes it on unmount
+- Only fires when `store.mode === 'analysis'` and the currently focused element is not inside a `<textarea>` or `<input>` (so `CommentEditor` is unaffected)
+- Key bindings (see table below)
+- Calls `e.preventDefault()` for all handled keys to suppress page-scroll side effects
+
+| Key | Action |
+|---|---|
+| `ArrowRight` | `store.navigateForward()` |
+| `ArrowLeft` | `store.navigateBackward()` |
+| `ArrowDown` | `store.navigateSiblingDown()` |
+| `ArrowUp` | `store.navigateSiblingUp()` |
+| `Ctrl+ArrowRight` / `Meta+ArrowRight` | `store.navigateToEnd()` |
+| `Ctrl+ArrowLeft` / `Meta+ArrowLeft` | `store.navigateToStart()` |
+
+- Mount this composable inside `StudyView.vue`
+
+**New `src/components/VariationTree.vue`:**
+
+- Replaces the flat `.variation-line` `<div>` inside `AnalysisPanel`
+- Renders the variation tree in PGN-book notation:
+  - The root level of `variationTree` is shown as a sequence of move chips on one line
+  - When a node has more than one child, the first child continues inline; additional children are rendered as indented sub-variation blocks, wrapped in a lighter-coloured container with a left-border accent (matching the Lichess study aesthetic)
+  - Sub-variation blocks recurse: they can themselves contain further branches
+  - The active node (the last element of `store.currentPath`) receives the `--active` highlight class
+  - When the current path tip has multiple children, render small branch-choice chips immediately after the active node: e.g. `→ e4` · `→ d4`; clicking one calls `store.navigateForward()` after setting `currentPath` to that child
+- Every move chip is a `<button>` that calls `store.jumpToNode(node)` on click
+- The active node is scrolled into view via `el.scrollIntoView({ block: 'nearest' })` after `currentPath` changes
+
+**`AnalysisPanel.vue` — update:**
+
+- Replace the `.variation-line` block with `<VariationTree />`
+- Remove the existing `variation-hint` span (the empty-tree hint moves inside `VariationTree`)
+- Keep `MoveSymbolSelector`, `CommentEditor`, `ResumeBanner`, and the take-back button unchanged
+
+### Testing
+
+- Unit test the tree-building helper in `SessionService` (see API section above)
+- Vitest tests for `navigateForward`, `navigateBackward`, `navigateSiblingDown/Up`, `navigateToEnd`, `navigateToStart` in the session store: single line, forking tree, empty tree edge cases
+- Vitest test for `addAnalysisMove` deduplication: playing an existing child navigates into it; playing a new move creates a node
+- Vitest test for `useVariationKeyNav`: keyboard events dispatch the correct store action; events inside a `<textarea>` are ignored; events in guess mode are ignored
+
+### Acceptance Criteria
+
+- [ ] After resuming a session, all previously explored variations are visible in the variation tree — nothing is lost
+- [ ] `→` advances one move along the current line without any network request
+- [ ] `←` steps back one move without any network request
+- [ ] `↑` / `↓` cycles through sibling variations at a branching point
+- [ ] `Ctrl+→` jumps to the leaf of the deepest current line
+- [ ] `Ctrl+←` returns to the root of the analysis tree
+- [ ] Playing a move that already exists in the tree navigates into it — no duplicate annotation rows are created
+- [ ] A position with multiple children shows branch-choice chips in the variation panel indicating what lines are available
+- [ ] The active move chip is always scrolled into view when navigating with the keyboard
+- [ ] Typing in `CommentEditor` is never intercepted by keyboard navigation
+- [ ] All six keyboard shortcuts are inert when `store.mode` is not `'analysis'`
