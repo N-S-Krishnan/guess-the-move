@@ -3,35 +3,25 @@ import { useSessionStore } from '@/stores/session'
 import ResumeBanner from '@/components/ResumeBanner.vue'
 import CommentEditor from '@/components/CommentEditor.vue'
 import MoveSymbolSelector from '@/components/MoveSymbolSelector.vue'
-import type { VariationNode } from '@/types/session'
+import VariationTree from '@/components/VariationTree.vue'
 
 const store = useSessionStore()
-
-function handleNodeClick(node: VariationNode) {
-  store.jumpToNode(node)
-}
 </script>
 
 <template>
   <div class="analysis-panel" data-testid="analysis-panel">
     <ResumeBanner />
 
-    <div class="variation-line" data-testid="variation-line">
-      <span v-if="store.currentPath.length === 0" class="variation-hint">
+    <div class="variation-tree-container">
+      <span v-if="store.variationTree.length === 0" class="variation-hint">
         Make a move to explore a variation
       </span>
       <template v-else>
-        <button
-          v-for="(node, i) in store.currentPath"
-          :key="node.id"
-          type="button"
-          class="variation-move"
-          :class="{ 'variation-move--active': i === store.currentPath.length - 1 }"
-          :data-testid="`variation-move-${i}`"
-          @click="handleNodeClick(node)"
-        >
-          {{ node.san }}
-        </button>
+        <VariationTree
+          v-for="root in store.variationTree"
+          :key="root.id"
+          :node="root"
+        />
       </template>
     </div>
 
@@ -60,10 +50,10 @@ function handleNodeClick(node: VariationNode) {
   gap: 0.75rem;
 }
 
-.variation-line {
+.variation-tree-container {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.25rem;
   min-height: 2.25rem;
   padding: 0.5rem 0.75rem;
@@ -79,34 +69,6 @@ function handleNodeClick(node: VariationNode) {
   font-style: italic;
   font-family: sans-serif;
   font-size: 0.875rem;
-}
-
-.variation-move {
-  padding: 0.15rem 0.45rem;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  cursor: pointer;
-  color: #2c3e50;
-  font-family: monospace;
-  font-size: 0.9rem;
-  line-height: 1.4;
-}
-
-.variation-move:hover {
-  background: #f1f3f5;
-  border-color: #ced4da;
-}
-
-.variation-move--active {
-  background: #2c3e50;
-  color: #fff;
-  border-color: #2c3e50;
-}
-
-.variation-move--active:hover {
-  background: #3d5166;
-  border-color: #3d5166;
 }
 
 .analysis-controls {

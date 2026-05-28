@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
+import { useVariationKeyNav } from '@/composables/useVariationKeyNav'
 import AnalysisPanel from '@/components/AnalysisPanel.vue'
 import ChessBoard from '@/components/ChessBoard.vue'
 import ExportButton from '@/components/ExportButton.vue'
@@ -12,6 +13,7 @@ import type { Color } from 'chessground/types'
 
 const router = useRouter()
 const store = useSessionStore()
+useVariationKeyNav()
 
 onMounted(() => {
   if (!store.currentFen) {

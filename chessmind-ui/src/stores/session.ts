@@ -17,10 +17,10 @@ function isSessionGone(err: unknown): boolean {
   return axios.isAxiosError(err) && err.response?.status === 404
 }
 
-function findPath(nodes: VariationNode[], targetFen: string): VariationNode[] | null {
+function findPathById(nodes: VariationNode[], targetId: string): VariationNode[] | null {
   for (const node of nodes) {
-    if (node.fen === targetFen) return [node]
-    const childPath = findPath(node.children, targetFen)
+    if (node.id === targetId) return [node]
+    const childPath = findPathById(node.children, targetId)
     if (childPath) return [node, ...childPath]
   }
   return null
@@ -181,6 +181,13 @@ export const useSessionStore = defineStore('session', () => {
 
   async function addAnalysisMove(uci: string): Promise<void> {
     if (!sessionId.value) return
+    const tip = currentPath.value[currentPath.value.length - 1]
+    const siblings = tip !== undefined ? tip.children : variationTree.value
+    const existing = siblings.find((n) => n.uci === uci)
+    if (existing) {
+      currentPath.value.push(existing)
+      return
+    }
     isLoading.value = true
     serverError.value = null
     const fromFen = activeAnalysisFen.value ?? ''
@@ -232,12 +239,70 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function jumpToNode(node: VariationNode): void {
-    const path = findPath(variationTree.value, node.fen)
+    const path = findPathById(variationTree.value, node.id)
     if (path) {
       currentPath.value = path
       currentComment.value = ''
       currentSymbol.value = null
     }
+  }
+
+  function navigateForward(): void {
+    if (currentPath.value.length === 0) {
+      if (variationTree.value.length > 0) {
+        currentPath.value.push(variationTree.value[0]!)
+      }
+      return
+    }
+    const tip = currentPath.value[currentPath.value.length - 1]!
+    if (tip.children.length > 0) {
+      currentPath.value.push(tip.children[0]!)
+    }
+  }
+
+  function navigateBackward(): void {
+    currentPath.value.pop()
+  }
+
+  function navigateSiblingDown(): void {
+    if (currentPath.value.length === 0) return
+    const tip = currentPath.value[currentPath.value.length - 1]!
+    const siblings =
+      currentPath.value.length === 1
+        ? variationTree.value
+        : currentPath.value[currentPath.value.length - 2]!.children
+    const idx = siblings.indexOf(tip)
+    if (idx === -1 || siblings.length <= 1) return
+    currentPath.value[currentPath.value.length - 1] = siblings[(idx + 1) % siblings.length]!
+  }
+
+  function navigateSiblingUp(): void {
+    if (currentPath.value.length === 0) return
+    const tip = currentPath.value[currentPath.value.length - 1]!
+    const siblings =
+      currentPath.value.length === 1
+        ? variationTree.value
+        : currentPath.value[currentPath.value.length - 2]!.children
+    const idx = siblings.indexOf(tip)
+    if (idx === -1 || siblings.length <= 1) return
+    currentPath.value[currentPath.value.length - 1] = siblings[(idx - 1 + siblings.length) % siblings.length]!
+  }
+
+  function navigateToEnd(): void {
+    if (currentPath.value.length === 0) {
+      const first = variationTree.value[0]
+      if (!first) return
+      currentPath.value.push(first)
+    }
+    let tip = currentPath.value[currentPath.value.length - 1]!
+    while (tip.children.length > 0) {
+      tip = tip.children[0]!
+      currentPath.value.push(tip)
+    }
+  }
+
+  function navigateToStart(): void {
+    currentPath.value = []
   }
 
   function nextPosition(): void {
@@ -312,7 +377,7 @@ export const useSessionStore = defineStore('session', () => {
     mode.value = (response.mode as SessionMode) ?? null
     moves.value = response.moves
     plyCount.value = response.plyCount
-    variationTree.value = []
+    variationTree.value = response.variationTree ?? []
     currentPath.value = []
     currentComment.value = ''
     currentSymbol.value = null
@@ -352,6 +417,12 @@ export const useSessionStore = defineStore('session', () => {
     addAnalysisMove,
     takeBackAnalysisMove,
     jumpToNode,
+    navigateForward,
+    navigateBackward,
+    navigateSiblingDown,
+    navigateSiblingUp,
+    navigateToEnd,
+    navigateToStart,
     nextPosition,
     loadSession,
     resumeStudy,

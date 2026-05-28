@@ -43,7 +43,7 @@ export interface VariationNode {
   san: string
   uci: string
   fen: string
-  fromFen: string
+  fromFen: string | null
   symbol?: string
   comment?: string
   children: VariationNode[]
@@ -87,4 +87,5 @@ export interface LoadSessionResponse {
   mode: string | null
   moves: string[] | null
   plyCount: number | null
+  variationTree?: VariationNode[]
 }
