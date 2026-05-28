@@ -9,4 +9,5 @@ interface AnnotationRepository : JpaRepository<Annotation, UUID> {
     fun findTopBySessionIdAndFenOrderByCreatedAtDesc(sessionId: UUID, fen: String): Annotation?
     fun findTopBySessionIdAndFenAndMoveUciIsNullOrderByCreatedAtDesc(sessionId: UUID, fen: String): Annotation?
     fun findAllBySessionId(sessionId: UUID): List<Annotation>
+    fun findFirstBySessionIdAndFenAndMoveUciIsNotNullOrderByCreatedAtAsc(sessionId: UUID, fen: String): Annotation?
 }

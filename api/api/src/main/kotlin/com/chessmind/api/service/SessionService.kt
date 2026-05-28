@@ -7,6 +7,7 @@ import com.chessmind.api.client.dto.ParseResponse
 import com.chessmind.api.dto.AddAnalysisMoveRequest
 import com.chessmind.api.dto.AddAnalysisMoveResponse
 import com.chessmind.api.dto.AnnotationRequest
+import com.chessmind.api.dto.AnnotationTreeNode
 import com.chessmind.api.dto.CreateSessionResponse
 import com.chessmind.api.dto.GuessRequest
 import com.chessmind.api.dto.GuessResponse
@@ -111,6 +112,9 @@ class SessionService(
             )
         }
 
+        val annotations = annotationRepository.findAllBySessionId(sessionId)
+        val variationTree = buildAnnotationTree(annotations)
+
         return LoadSessionResponse(
             id = session.id.toString(),
             white = session.white,
@@ -128,7 +132,31 @@ class SessionService(
             },
             moves = parseResponse.moves.map { it.san },
             plyCount = session.plyCount ?: parseResponse.plyCount,
+            variationTree = variationTree,
         )
+    }
+
+    private fun buildAnnotationTree(annotations: List<Annotation>): List<AnnotationTreeNode> {
+        val moveAnnotations = annotations.filter { it.moveUci != null }
+        val byParent = moveAnnotations.groupBy { it.parentId }
+
+        fun buildChildren(parentId: UUID?): List<AnnotationTreeNode> =
+            (byParent[parentId] ?: emptyList())
+                .sortedBy { it.createdAt }
+                .map { ann ->
+                    AnnotationTreeNode(
+                        id = ann.id.toString(),
+                        san = ann.moveSan ?: "",
+                        uci = ann.moveUci ?: "",
+                        fen = ann.fen,
+                        fromFen = ann.fromFen,
+                        symbol = ann.symbol,
+                        comment = ann.comment,
+                        children = buildChildren(ann.id),
+                    )
+                }
+
+        return buildChildren(null)
     }
 
     suspend fun createSession(pgn: String): CreateSessionResponse {
@@ -366,6 +394,9 @@ class SessionService(
         val san = requireNotNull(validateResult.san) { "validate returned no SAN for legal move" }
         val fenAfter = requireNotNull(validateResult.fenAfter) { "validate returned no fenAfter for legal move" }
 
+        val parentAnnotation = annotationRepository
+            .findFirstBySessionIdAndFenAndMoveUciIsNotNullOrderByCreatedAtAsc(sessionId, request.fromFen)
+
         val annotation = annotationRepository.save(
             Annotation(
                 sessionId = sessionId,
@@ -373,6 +404,7 @@ class SessionService(
                 fromFen = request.fromFen,
                 moveUci = request.uciMove,
                 moveSan = san,
+                parentId = parentAnnotation?.id,
             ),
         )
 

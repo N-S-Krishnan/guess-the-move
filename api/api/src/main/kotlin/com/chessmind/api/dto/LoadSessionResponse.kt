@@ -13,4 +13,5 @@ data class LoadSessionResponse(
     val mode: String?,
     val moves: List<String>?,
     val plyCount: Int?,
+    val variationTree: List<AnnotationTreeNode> = emptyList(),
 )

@@ -767,6 +767,7 @@ class SessionServiceTest {
         val annotation = savedAnnotation(session.id, "analysis_fen_after")
         every { sessionRepository.findById(session.id) } returns Optional.of(session)
         every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findFirstBySessionIdAndFenAndMoveUciIsNotNullOrderByCreatedAtAsc(session.id, "from_fen") } returns null
         every { annotationRepository.save(any()) } returns annotation
         justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
         mockValidateLegal("from_fen", "e2e4", fenAfter = "analysis_fen_after")
@@ -788,6 +789,7 @@ class SessionServiceTest {
         val annotation = savedAnnotation(session.id, "new_fen")
         every { sessionRepository.findById(session.id) } returns Optional.of(session)
         every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findFirstBySessionIdAndFenAndMoveUciIsNotNullOrderByCreatedAtAsc(session.id, "from_fen") } returns null
         every { annotationRepository.save(any()) } returns annotation
         justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
         mockValidateLegal("from_fen", "e2e4", fenAfter = "new_fen")
@@ -1116,6 +1118,7 @@ class SessionServiceTest {
         every { sessionRepository.findById(session.id) } returns Optional.of(session)
         every { valueOps.get("session:${session.id}:state") } returns sampleParsed
         every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findAllBySessionId(session.id) } returns emptyList()
 
         val result = service.loadSession(session.id)
 
@@ -1133,6 +1136,7 @@ class SessionServiceTest {
         every { valueOps.get("session:${session.id}:progress") } returns null
         coEvery { analysisClient.parse(any()) } returns sampleParsed
         justRun { valueOps.set(any(), any<Any>(), any<Long>(), any()) }
+        every { annotationRepository.findAllBySessionId(session.id) } returns emptyList()
 
         val result = service.loadSession(session.id)
 
@@ -1148,10 +1152,140 @@ class SessionServiceTest {
         every { sessionRepository.findById(session.id) } returns Optional.of(session)
         every { valueOps.get("session:${session.id}:state") } returns sampleParsed
         every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findAllBySessionId(session.id) } returns emptyList()
 
         val result = service.loadSession(session.id)
 
         assertEquals("complete", result.mode)
+    }
+
+    // ── loadSession — variation tree building ──────────────────────────────────
+
+    private fun moveAnnotation(
+        sessionId: UUID,
+        id: UUID = UUID.randomUUID(),
+        fen: String,
+        fromFen: String? = null,
+        moveUci: String = "e2e4",
+        moveSan: String = "e4",
+        parentId: UUID? = null,
+        createdAtOffset: Long = 0L,
+    ) = Annotation(
+        id = id,
+        sessionId = sessionId,
+        fen = fen,
+        fromFen = fromFen,
+        moveUci = moveUci,
+        moveSan = moveSan,
+        parentId = parentId,
+        createdAt = java.time.Instant.EPOCH.plusSeconds(createdAtOffset),
+    )
+
+    private fun commentAnnotation(sessionId: UUID, fen: String) = Annotation(
+        sessionId = sessionId,
+        fen = fen,
+        comment = "nice position",
+    )
+
+    private fun loadSessionWithAnnotations(session: com.chessmind.api.entity.StudySession, anns: List<Annotation>) = runTest {
+        val progress = SessionProgress(currentFen = "some_fen", moveIndex = 2, mode = "guess")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findAllBySessionId(session.id) } returns anns
+        service.loadSession(session.id)
+    }
+
+    @Test
+    fun `loadSession returns empty variationTree when there are no annotations`() = runTest {
+        val session = fullInProgressSessionFor()
+        val progress = SessionProgress(currentFen = "some_fen", moveIndex = 2, mode = "guess")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findAllBySessionId(session.id) } returns emptyList()
+
+        val result = service.loadSession(session.id)
+
+        assertEquals(emptyList<Any>(), result.variationTree)
+    }
+
+    @Test
+    fun `loadSession builds a single linear variation line correctly`() = runTest {
+        val session = fullInProgressSessionFor()
+        val progress = SessionProgress(currentFen = "some_fen", moveIndex = 2, mode = "guess")
+        val idA = UUID.randomUUID()
+        val idB = UUID.randomUUID()
+        val idC = UUID.randomUUID()
+        val annA = moveAnnotation(session.id, id = idA, fen = "fen_A", moveUci = "e2e4", moveSan = "e4", createdAtOffset = 1)
+        val annB = moveAnnotation(session.id, id = idB, fen = "fen_B", moveUci = "e7e5", moveSan = "e5", parentId = idA, createdAtOffset = 2)
+        val annC = moveAnnotation(session.id, id = idC, fen = "fen_C", moveUci = "g1f3", moveSan = "Nf3", parentId = idB, createdAtOffset = 3)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findAllBySessionId(session.id) } returns listOf(annA, annB, annC)
+
+        val result = service.loadSession(session.id)
+
+        assertEquals(1, result.variationTree.size)
+        val root = result.variationTree[0]
+        assertEquals(idA.toString(), root.id)
+        assertEquals("e4", root.san)
+        assertEquals(1, root.children.size)
+        val second = root.children[0]
+        assertEquals(idB.toString(), second.id)
+        assertEquals("e5", second.san)
+        assertEquals(1, second.children.size)
+        assertEquals(idC.toString(), second.children[0].id)
+        assertEquals("Nf3", second.children[0].san)
+        assertEquals(0, second.children[0].children.size)
+    }
+
+    @Test
+    fun `loadSession builds a forking tree with two sibling branches`() = runTest {
+        val session = fullInProgressSessionFor()
+        val progress = SessionProgress(currentFen = "some_fen", moveIndex = 2, mode = "guess")
+        val idA = UUID.randomUUID()
+        val idB = UUID.randomUUID()
+        val idC = UUID.randomUUID()
+        // A is the root; B and C are both children of A (two responses)
+        val annA = moveAnnotation(session.id, id = idA, fen = "fen_A", moveUci = "e2e4", moveSan = "e4", createdAtOffset = 1)
+        val annB = moveAnnotation(session.id, id = idB, fen = "fen_B", moveUci = "e7e5", moveSan = "e5", parentId = idA, createdAtOffset = 2)
+        val annC = moveAnnotation(session.id, id = idC, fen = "fen_C", moveUci = "d7d5", moveSan = "d5", parentId = idA, createdAtOffset = 3)
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findAllBySessionId(session.id) } returns listOf(annA, annB, annC)
+
+        val result = service.loadSession(session.id)
+
+        assertEquals(1, result.variationTree.size)
+        val root = result.variationTree[0]
+        assertEquals(idA.toString(), root.id)
+        assertEquals(2, root.children.size)
+        assertEquals(idB.toString(), root.children[0].id)
+        assertEquals("e5", root.children[0].san)
+        assertEquals(idC.toString(), root.children[1].id)
+        assertEquals("d5", root.children[1].san)
+    }
+
+    @Test
+    fun `loadSession excludes comment-only annotations from the variation tree`() = runTest {
+        val session = fullInProgressSessionFor()
+        val progress = SessionProgress(currentFen = "some_fen", moveIndex = 2, mode = "guess")
+        val idA = UUID.randomUUID()
+        val moveAnn = moveAnnotation(session.id, id = idA, fen = "fen_A", moveUci = "e2e4", moveSan = "e4")
+        val commentAnn = commentAnnotation(session.id, "fen_A")
+        every { sessionRepository.findById(session.id) } returns Optional.of(session)
+        every { valueOps.get("session:${session.id}:state") } returns sampleParsed
+        every { valueOps.get("session:${session.id}:progress") } returns progress
+        every { annotationRepository.findAllBySessionId(session.id) } returns listOf(moveAnn, commentAnn)
+
+        val result = service.loadSession(session.id)
+
+        assertEquals(1, result.variationTree.size)
+        assertEquals(idA.toString(), result.variationTree[0].id)
+        assertEquals(0, result.variationTree[0].children.size)
     }
 
     @Test
