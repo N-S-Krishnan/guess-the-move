@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: chessmind
+      POSTGRES_USER: chessmind
+      POSTGRES_PASSWORD: chessmind
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chessmind"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  chessmind-analysis:
+    build: ./chessmind-analysis
+    ports:
+      - "8000:8000"
+
+  chessmind-api:
+    build: ./api/api
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/chessmind
+      SPRING_DATASOURCE_USERNAME: chessmind
+      SPRING_DATASOURCE_PASSWORD: chessmind
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      ANALYSIS_BASE_URL: http://chessmind-analysis:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chessmind-analysis:
+        condition: service_started
+
+  chessmind-ui:
+    build: ./chessmind-ui
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080
+    depends_on:
+      - chessmind-api
+
+volumes:
+  postgres_data:
